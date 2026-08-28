@@ -1,0 +1,12 @@
+{
+  "name": "tradesight",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+  "assets": {
+    "directory": "./public",
+    "run_worker_first": ["/api/*"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

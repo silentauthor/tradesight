@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TradeSight — book-grounded trading analysis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' fill='%230d0c0a'/><text x='32' y='42' font-family='Georgia,serif' font-size='27' fill='%23c9963f' text-anchor='middle'>TS</text></svg>">
+</head>
+<body>
+
+<header>
+  <div class="logo">Trade<span>Sight</span></div>
+  <nav>
+    <button data-view="analyze" class="active">Analyze</button>
+    <button data-view="scanner">Market Scanner</button>
+    <button data-view="watchlist">Watchlist</button>
+    <button data-view="journal">Journal</button>
+    <button data-view="learn">Playbook</button>
+  </nav>
+  <div class="market-chips" id="marketChips"></div>
+</header>
+
+<main>
+
+  <!-- ================= ANALYZE ================= -->
+  <section class="view active" id="view-analyze">
+    <div class="search-wrap">
+      <input id="searchInput" placeholder="Enter a stock or crypto — e.g. AAPL, TSLA, BTC, ETH, NVDA…" autocomplete="off" spellcheck="false" autofocus>
+      <div class="suggestions" id="suggestions"></div>
+    </div>
+    <div class="quick-syms" id="quickSyms"></div>
+    <div id="analyzeStatus"></div>
+    <div id="analyzeResult" style="display:none">
+
+      <div class="asset-head" id="assetHead"></div>
+
+      <div class="panel" style="margin-bottom:16px">
+        <div class="verdict-box">
+          <div class="score-ring" id="scoreRing"></div>
+          <div class="verdict-text">
+            <div id="verdictText"></div>
+            <div class="sub" id="verdictSub"></div>
+            <div class="sub" id="regimeSub" style="margin-top:6px"></div>
+          </div>
+          <button class="star-btn" id="watchBtn">☆ Watch</button>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-bottom:16px">
+        <h3>Chart <span class="hint chip">scroll to zoom · drag to pan</span></h3>
+        <div class="chart-legend" id="chartLegend"></div>
+        <div class="chart-box"><canvas id="chartCanvas"></canvas></div>
+      </div>
+
+      <div class="grid cols-2" style="margin-bottom:16px">
+        <div class="panel">
+          <h3>Trade plan — long framework</h3>
+          <div class="plan-rows" id="planRows"></div>
+          <div class="footnote" id="planExitRules"></div>
+        </div>
+        <div class="panel">
+          <h3>Risk factors — read before anything else</h3>
+          <ul class="signals" id="riskList"></ul>
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-bottom:16px">
+        <div class="panel">
+          <h3>What's working for it</h3>
+          <ul class="signals" id="prosList"></ul>
+        </div>
+        <div class="panel">
+          <h3>What's working against it</h3>
+          <ul class="signals" id="consList"></ul>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-bottom:16px">
+        <h3>Position size calculator — the books' 1% rule</h3>
+        <div class="calc">
+          <label>Account size ($)<input id="calcAccount" type="number" value="10000" min="1"></label>
+          <label>Risk per trade (%)<input id="calcRisk" type="number" value="1" min="0.1" max="5" step="0.1"></label>
+          <label>Entry<input id="calcEntry" type="number" step="any"></label>
+          <label>Stop<input id="calcStop" type="number" step="any"></label>
+        </div>
+        <div class="calc-out" id="calcOut"></div>
+        <div class="footnote">Never risk more than 1% of capital per trade (Stewie); max 10% of capital in one position; 2:1 minimum reward:risk (Zuckerman).</div>
+      </div>
+
+      <div class="panel" style="margin-bottom:16px">
+        <h3>Detected candlestick patterns (last 12 bars)</h3>
+        <ul class="signals" id="patternList"></ul>
+      </div>
+
+      <div class="panel">
+        <h3>Chart patterns &amp; gaps <span class="hint chip">multi-bar structures, scored with Bulkowski's real backtested stats</span></h3>
+        <ul class="signals" id="chartPatternList"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= SCANNER ================= -->
+  <section class="view" id="view-scanner">
+    <div class="panel">
+      <div class="scan-head">
+        <button id="scanBtn">Scan the market</button>
+        <span class="scan-note">Analyzes ~45 major US stocks, ETFs and top cryptos with the full engine, then ranks by setup quality. Click a row for the full analysis.</span>
+      </div>
+      <div id="scanStatus"></div>
+      <div style="overflow-x:auto">
+        <table class="scan" id="scanTable" style="display:none">
+          <thead><tr>
+            <th>#</th><th>Asset</th><th>Price</th><th>Day</th><th>Score</th><th>Verdict</th><th title="Short-term swing structure — can disagree with the long-term 200-day MA regime the score also weighs" style="cursor:help;border-bottom:1px dotted var(--paper-faint)">Trend</th><th>RSI</th><th>Top signal</th>
+          </tr></thead>
+          <tbody id="scanBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= WATCHLIST ================= -->
+  <section class="view" id="view-watchlist">
+    <div class="panel">
+      <h3>Watchlist</h3>
+      <div id="wlStatus"></div>
+      <div style="overflow-x:auto">
+        <table class="scan" id="wlTable" style="display:none">
+          <thead><tr><th>Asset</th><th>Price</th><th>Day</th><th>Score</th><th>Verdict</th><th></th></tr></thead>
+          <tbody id="wlBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= JOURNAL ================= -->
+  <section class="view" id="view-journal">
+    <div class="panel" style="margin-bottom:16px">
+      <h3>System Quality Number <span class="hint chip">Van Tharp — computed live from your logged results</span></h3>
+      <div id="sqnPanel"></div>
+    </div>
+    <div class="panel">
+      <h3>Trade journal <span class="hint chip">plan every trade before entry — Zuckerman</span></h3>
+      <div id="jrStatus"></div>
+      <div style="overflow-x:auto">
+        <table class="scan" id="jrTable" style="display:none">
+          <thead><tr><th>Date</th><th>Asset</th><th>Entry</th><th>Stop</th><th>Target</th><th>Risk%</th><th>R:R</th><th>Status</th><th>Result R</th><th></th></tr></thead>
+          <tbody id="jrBody"></tbody>
+        </table>
+      </div>
+      <div class="footnote">Log a plan from any analysis with "Log to journal". Review every trade afterwards: did you follow the plan?</div>
+    </div>
+  </section>
+
+  <!-- ================= PLAYBOOK ================= -->
+  <section class="view" id="view-learn">
+    <div class="panel">
+      <h3>The playbook — rules distilled from the library</h3>
+      <div id="learnBody"></div>
+    </div>
+  </section>
+
+  <div class="disclaimer" id="disclaimer"></div>
+</main>
+
+<script src="knowledge.js"></script>
+<script src="indicators.js"></script>
+<script src="patterns.js"></script>
+<script src="engine.js"></script>
+<script src="chart.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

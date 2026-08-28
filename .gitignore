@@ -1,0 +1,16 @@
+# Trading book library — copyrighted commercial books sourced from
+# piracy sites (z-library, 1lib, pdfcoffee, OceanofPDF per their own
+# filenames). Read locally for research/rule-extraction; never committed.
+*.pdf
+*.epub
+*.mobi
+
+# OS cruft
+.DS_Store
+
+# Claude Code local settings (machine-specific, not shared config)
+.claude/settings.local.json
+
+# Node / Wrangler build artifacts (regenerated via `npm install` / `wrangler dev`)
+tradesight/node_modules/
+tradesight/.wrangler/
