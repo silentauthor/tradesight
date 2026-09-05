@@ -14,3 +14,7 @@
 # Node / Wrangler build artifacts (regenerated via `npm install` / `wrangler dev`)
 tradesight/node_modules/
 tradesight/.wrangler/
+
+# Secrets — Birdeye API key (never commit)
+tradesight/.env
+tradesight/.dev.vars

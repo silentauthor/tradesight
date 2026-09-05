@@ -6,6 +6,27 @@
 
 const Engine = (() => {
 
+  const cap = (s) => String(s).charAt(0).toUpperCase() + String(s).slice(1);
+
+  /* Timeframe profile — swing (daily/weekly) vs intraday (15-minute/hourly).
+     Only labels and a few volatility/extension thresholds change; the rules,
+     their weights and their book attributions are identical. Callers pass one
+     of these; assess() falls back to swing if none is given. */
+  const TF_SWING = {
+    mode: 'swing', regimeWord: 'long-term', htfName: 'weekly', barClose: 'daily close',
+    maLong: '200-day MA', maShort: '20-day MA', volWindow: 'own 1-year',
+    extPct: 15, atrHighPct: 8, near20Pct: 4,
+    pullbackName: '"Holy Grail" pullback zone',
+    flattenRule: null,
+  };
+  const TF_INTRADAY = {
+    mode: 'intraday', regimeWord: 'intraday', htfName: 'hourly', barClose: '15-minute close',
+    maLong: '200-bar MA', maShort: '20-bar MA', volWindow: 'recent',
+    extPct: 5, atrHighPct: 3, near20Pct: 1.5,
+    pullbackName: 'moving-average pullback zone',
+    flattenRule: 'Day-trade discipline: set the stop and target at entry and leave them; skip names swinging more than ~2% a bar; flatten every position by the end of your trading session — never carry an intraday trade overnight',
+  };
+
   const round = (p) => {
     if (p == null || !isFinite(p)) return null;
     const mag = Math.abs(p);
@@ -15,8 +36,9 @@ const Engine = (() => {
 
   /* ---------- scoring ---------- */
 
-  function assess(asset, daily, weekly, marketCtx = {}) {
-    const A = daily;                       // TA.analyzeSeries output on daily candles
+  function assess(asset, primary, higher, marketCtx = {}, tf = TF_SWING) {
+    const A = primary;                     // TA.analyzeSeries output on the trading timeframe
+    const weekly = higher;                 // TA.analyzeSeries output one timeframe up
     const L = A.latest, S = A.structure;
     const price = L.price;
     const candles = asset.candles;
@@ -30,8 +52,8 @@ const Engine = (() => {
     // ---- trend regime (the tide) ----
     const above200 = L.sma200 != null && price > L.sma200;
     if (L.sma200 != null) {
-      if (above200) add(10, 'Price is above the 200-day MA — long-term bull regime.', 'Zuckerman');
-      else { add(-12, 'Price is below the 200-day MA — long-term bear regime; longs are counter-tide.', 'Zuckerman'); }
+      if (above200) add(10, `Price is above the ${tf.maLong} — ${tf.regimeWord} bull regime.`, 'Zuckerman');
+      else { add(-12, `Price is below the ${tf.maLong} — ${tf.regimeWord} bear regime; longs are counter-tide.`, 'Zuckerman'); }
     }
     if (S.trend === 'uptrend') add(12, 'Market structure is an uptrend (higher highs + higher lows).', 'Zuckerman, Stewie');
     else if (S.trend === 'downtrend') { add(-14, 'Market structure is a downtrend (lower highs + lower lows).', 'Zuckerman, Stewie'); }
@@ -59,12 +81,13 @@ const Engine = (() => {
       else if (S.rangePos < 0.4 && S.trend === 'uptrend') add(4, 'Price is in the discount (lower half) of its swing range within an uptrend — the "cheap" zone the books buy.', 'Smart Money');
     }
 
-    // weekly alignment (trade one timeframe up — Zuckerman)
+    // higher-timeframe alignment (trade one timeframe up — Zuckerman:
+    // day trade → check hourly; swing → check weekly)
     if (weekly) {
       const wTrend = weekly.structure.trend;
       const wAbove = weekly.latest.sma20 != null && weekly.latest.price > weekly.latest.sma20;
-      if (wTrend === 'uptrend' || (wTrend === 'insufficient' && wAbove)) add(6, 'Weekly timeframe agrees with the long side (higher-timeframe confirmation).', 'Zuckerman');
-      else if (wTrend === 'downtrend') add(-8, 'Weekly timeframe is in a downtrend — higher timeframe disagrees with longs.', 'Zuckerman');
+      if (wTrend === 'uptrend' || (wTrend === 'insufficient' && wAbove)) add(6, `${cap(tf.htfName)} timeframe agrees with the long side (higher-timeframe confirmation).`, 'Zuckerman');
+      else if (wTrend === 'downtrend') add(-8, `${cap(tf.htfName)} timeframe is in a downtrend — higher timeframe disagrees with longs.`, 'Zuckerman');
     }
 
     // ---- regime: ADX gates whether trend or mean-reversion signals get trusted ----
@@ -105,13 +128,13 @@ const Engine = (() => {
       add(4, 'Pierced the lower Bollinger Band — stretched to the downside, bounce-prone.', 'Stewie');
     }
     const atrPct = L.atr != null ? (L.atr / price) * 100 : null;
-    if (atrPct != null && atrPct > 8) add(-6, `Very high volatility (ATR ${atrPct.toFixed(1)}% of price) — halve position size and widen stops.`, 'Stewie');
+    if (atrPct != null && atrPct > tf.atrHighPct) add(-6, `Very high volatility (ATR ${atrPct.toFixed(1)}% of price per ${tf.mode === 'intraday' ? 'bar' : 'day'}) — halve position size and widen stops.`, 'Stewie');
 
     // ---- distance from mean (chasing check) ----
     if (L.sma20 != null) {
       const ext = ((price - L.sma20) / L.sma20) * 100;
-      if (ext > 15) add(-6, `Price is ${ext.toFixed(0)}% above the 20-day MA — extended; the smart entry was the pullback.`, 'Stewie');
-      else if (ext > 0 && ext < 4 && S.trend === 'uptrend') add(7, 'Sitting near the 20-day MA in an uptrend — "Holy Grail" pullback zone.', 'Stewie');
+      if (ext > tf.extPct) add(-6, `Price is ${ext.toFixed(0)}% above the ${tf.maShort} — extended; the smart entry was the pullback.`, 'Stewie');
+      else if (ext > 0 && ext < tf.near20Pct && S.trend === 'uptrend') add(7, `Sitting near the ${tf.maShort} in an uptrend — ${tf.pullbackName}.`, 'Stewie');
     }
 
     // ---- volume ----
@@ -213,35 +236,27 @@ const Engine = (() => {
 
     // ---- volatility regime (Natenberg's volatility-cone idea, via ATR percentile) ----
     if (L.volPercentile != null) {
-      if (L.volPercentile > 0.9) add(-3, `Volatility (ATR) is in the top ${(100 - L.volPercentile * 100).toFixed(0)}% of its own 1-year range — check whether there\'s a known catalyst before trusting a mean-reversion fade here.`, 'Natenberg, McMillan');
-      else if (L.volPercentile < 0.1) add(2, `Volatility (ATR) is in the bottom ${(L.volPercentile * 100).toFixed(0)}% of its own 1-year range — compressed volatility often precedes an expansion move.`, 'Natenberg');
+      if (L.volPercentile > 0.9) add(-3, `Volatility (ATR) is in the top ${(100 - L.volPercentile * 100).toFixed(0)}% of its ${tf.volWindow} range — check whether there\'s a known catalyst before trusting a mean-reversion fade here.`, 'Natenberg, McMillan');
+      else if (L.volPercentile < 0.1) add(2, `Volatility (ATR) is in the bottom ${(L.volPercentile * 100).toFixed(0)}% of its ${tf.volWindow} range — compressed volatility often precedes an expansion move.`, 'Natenberg');
     }
 
     // ---- market context (the tide) ----
     if (marketCtx.regime === 'risk-off') add(-8, `Overall market is risk-off (${marketCtx.detail}) — long setups fail more in a falling tide.`, 'Stewie, Zuckerman');
     if (marketCtx.regime === 'risk-on') add(4, `Overall market is supportive (${marketCtx.detail}).`, 'Stewie');
-    if (asset.isCrypto && marketCtx.btcTrend === 'down' && !/^BTC/.test(asset.symbol)) {
-      add(-8, 'Bitcoin is trending down — altcoins are tightly correlated to BTC and rarely swim against it.', 'Zuckerman');
+    const isSol = /^W?SOL$/i.test(asset.symbol || '') || asset.address === 'So11111111111111111111111111111111111111112';
+    if (marketCtx.solTrend === 'down' && !isSol) {
+      add(-8, 'SOL is trending down — Solana tokens are high-beta to SOL and rarely swim against it.', 'Zuckerman');
     }
 
-    // ---- intermarket chain (Murphy: bonds → stocks; dollar → cap-size rotation) ----
-    if (!asset.isCrypto) {
-      if (marketCtx.deflationWarning) {
-        flag('Intermarket warning: bonds are rising while stocks fall — a deflationary decoupling regime, not the normal supportive bond/stock relationship. Historically a harder tape for equity longs generally.', 'Murphy (intermarket analysis)');
-      } else if (marketCtx.bondTrend === 'up' && marketCtx.regime !== 'risk-off') {
-        add(3, marketCtx.intermarketNote || 'Bonds are firm — the normal, supportive intermarket backdrop for equities.', 'Murphy (intermarket analysis)');
-      } else if (marketCtx.bondTrend === 'down' && marketCtx.regime === 'risk-off') {
-        add(-3, 'Bonds falling alongside a risk-off tape — rate pressure compounding the weak equity backdrop.', 'Murphy (intermarket analysis)');
-      }
-    }
-
-    // ---- liquidity ----
-    if (!asset.isCrypto && L.volAvg != null && L.volAvg * price < 5e6) {
-      flag(`Thin liquidity (~$${(L.volAvg * price / 1e6).toFixed(1)}M/day average) — slippage and manipulation risk; the books say trade liquid assets only.`, 'Zuckerman');
+    // ---- liquidity (on-chain) ----
+    if (!isSol && asset.liquidity != null && asset.liquidity < 1e6) {
+      flag(`Thin on-chain liquidity (~$${(asset.liquidity / 1e6).toFixed(2)}M pooled) — slippage and manipulation risk; the books say trade liquid assets only.`, 'Zuckerman');
+    } else if (L.volAvg != null && L.volAvg * price < 5e5) {
+      flag(`Thin traded volume (~$${(L.volAvg * price / 1e3).toFixed(0)}k/day average) — slippage and manipulation risk; the books say trade liquid assets only.`, 'Zuckerman');
     }
 
     // ---- build trade plan ----
-    const plan = buildPlan(asset, A, sr, freshPats);
+    const plan = buildPlan(asset, A, sr, freshPats, tf);
 
     // R:R gate (hard rule)
     if (plan && plan.rr1 != null && plan.rr2 != null && plan.rr2 < KB.riskManagement.minRewardRisk && plan.rr1 < 1) {
@@ -334,7 +349,7 @@ const Engine = (() => {
 
   /* Trade plan: entry zone, stop (structure + ATR buffer, whichever is safer),
      three targets, R multiples. Long-side plan (the books' swing framework). */
-  function buildPlan(asset, A, sr, freshPats) {
+  function buildPlan(asset, A, sr, freshPats, tf = TF_SWING) {
     const L = A.latest, S = A.structure;
     const price = L.price, atr = L.atr;
     if (price == null || atr == null) return null;
@@ -348,12 +363,12 @@ const Engine = (() => {
       entryHigh = round(price + 0.25 * atr);
       entryNote = nearSupport
         ? `Current price is a valid entry zone — just above support at ${round(sr.support.price)} with a defined invalidation below it.`
-        : 'Current price sits at the 20-day MA pullback zone ("Holy Grail" area — Stewie).';
+        : `Current price sits at the ${tf.maShort} pullback zone (${tf.pullbackName} — Stewie).`;
     } else {
       const pb = Math.max(L.sma20 ?? price - atr, sr.support ? sr.support.price : -Infinity);
       entryLow = round(pb - 0.3 * atr);
       entryHigh = round(pb + 0.3 * atr);
-      entryNote = `Price is extended away from the entry zone — the books say don't chase; wait for the low-volume pullback toward ${round(pb)} (20-day MA / support confluence).`;
+      entryNote = `Price is extended away from the entry zone — the books say don't chase; wait for the low-volume pullback toward ${round(pb)} (${tf.maShort} / support confluence).`;
     }
 
     // Stop: below structure (swing low or pattern low or support), with an ATR buffer
@@ -382,7 +397,7 @@ const Engine = (() => {
       side: 'long',
       entryLow, entryHigh, entryNote,
       stop, stopNote,
-      stopPct: round(((entryMid - stop) / entryMid) * 100),
+      stopPct: +(((entryMid - stop) / entryMid) * 100).toFixed(2),
       targets: [
         { label: 'T1 — first resistance / book partial, move stop to breakeven', price: round(t1), rr: +rr(t1).toFixed(1) },
         { label: 'T2 — next resistance / trail the stop ("walk it up" — Stewie)', price: round(t2), rr: +rr(t2).toFixed(1) },
@@ -392,10 +407,11 @@ const Engine = (() => {
       exitRules: [
         'Book part of the position at T1 and immediately move the stop to breakeven (Zuckerman).',
         'Trail the stop under each new higher low as the trade works — "walk the stop" (Stewie).',
-        'If the daily close falls back below the stop level or structure breaks, exit — never move the stop down (Zuckerman).',
+        `If the ${tf.barClose} falls back below the stop level or structure breaks, exit — never move the stop down (Zuckerman).`,
         asset.isCrypto ? 'Crypto trades 24/7 — leave the stop as a resting order, never a mental one (Zuckerman).' : 'Do not hold through an earnings report (Stewie).',
+        tf.flattenRule ? tf.flattenRule + ' (Ray Bears).' : null,
         'In choppy tape, book gains quickly — trends die fast in chop (Stewie).',
-      ],
+      ].filter(Boolean),
     };
   }
 
@@ -445,24 +461,11 @@ const Engine = (() => {
     };
   }
 
-  /* Market regime from index + BTC series (the "tide"), plus Murphy's
-     intermarket chain: bonds (TLT) normally correlate POSITIVELY with
-     stocks (rising bonds/falling yields = bullish for equities); a
-     deflationary regime is the explicit exception where bonds rise WHILE
-     stocks fall simultaneously (decoupling — cited with the 1997-98 Asian
-     crisis). Dollar (UUP) strength is a headwind for large multinational
-     earnings and a tailwind for domestically-focused small caps, and vice
-     versa. Bond/dollar series are optional — pass null to skip. */
-  function marketRegime(spy, btc, bonds, dollar) {
+  /* Market regime from the SOL series (the "tide"). SOL is the beta anchor for
+     the entire Solana token market — when SOL is weak, tokens bleed harder and
+     long setups fail more often (Stewie/Zuckerman: trade with the tide). */
+  function marketRegime(sol) {
     let riskScore = 0; const notes = [];
-    const trendOf = (a) => {
-      if (!a) return null;
-      const L = a.latest, S = a.structure;
-      const above200 = L.sma200 != null && L.price > L.sma200;
-      if (S.trend === 'downtrend' || (S.trend !== 'uptrend' && !above200)) return 'down';
-      if (S.trend === 'uptrend' || above200) return 'up';
-      return 'flat';
-    };
     const judge = (a, label) => {
       if (!a) return;
       const L = a.latest, S = a.structure;
@@ -472,30 +475,14 @@ const Engine = (() => {
       else if (S.trend === 'downtrend' || !above200) { riskScore--; notes.push(`${label} weak (${S.trend}${above200 ? '' : ', below 200-MA'})`); }
       else notes.push(`${label} mixed`);
     };
-    judge(spy, 'S&P 500'); judge(btc, 'Bitcoin');
+    judge(sol, 'SOL');
 
-    const spyTrend = trendOf(spy);
-    const bondTrend = trendOf(bonds);
-    const dollarTrend = trendOf(dollar);
-    let intermarketNote = null, deflationWarning = false;
-    if (bondTrend && spyTrend) {
-      if (bondTrend === 'up' && spyTrend === 'down') {
-        deflationWarning = true;
-        intermarketNote = 'Bonds rising while stocks fall — a deflationary decoupling regime (Murphy), not the normal positive bond/stock correlation.';
-      } else if (bondTrend === 'up' && spyTrend !== 'down') {
-        intermarketNote = 'Bonds and stocks both firm — the normal, supportive intermarket relationship.';
-      } else if (bondTrend === 'down' && spyTrend === 'up') {
-        intermarketNote = 'Bonds falling (yields rising) while stocks climb — historically fine short-term, but a persistent divergence here is a rate-driven headwind worth watching.';
-      }
-    }
-
+    const solTrend = sol
+      ? (sol.structure.trend === 'downtrend' || (sol.latest.sma50 != null && sol.latest.price < sol.latest.sma50) ? 'down' : 'up')
+      : null;
     const regime = riskScore >= 1 ? 'risk-on' : riskScore <= -1 ? 'risk-off' : 'mixed';
-    return {
-      regime, detail: notes.join('; '),
-      btcTrend: btc ? (btc.structure.trend === 'downtrend' || (btc.latest.sma50 != null && btc.latest.price < btc.latest.sma50) ? 'down' : 'up') : null,
-      bondTrend, dollarTrend, deflationWarning, intermarketNote,
-    };
+    return { regime, detail: notes.join('; '), solTrend };
   }
 
-  return { assess, positionSize, marketRegime, nearestLevels, sqn };
+  return { assess, positionSize, marketRegime, nearestLevels, sqn, TF_SWING, TF_INTRADAY };
 })();

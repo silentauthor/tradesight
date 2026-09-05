@@ -1,4 +1,6 @@
 {
+  // Requires a secret: `wrangler secret put BIRDEYE_API_KEY`
+  // (for `wrangler dev`, put BIRDEYE_API_KEY=... in tradesight/.dev.vars)
   "name": "tradesight",
   "main": "src/index.js",
   "compatibility_date": "2026-08-01",

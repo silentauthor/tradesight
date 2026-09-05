@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TradeSight — book-grounded trading analysis</title>
+<title>TradeSight — book-grounded Solana token analysis</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -21,6 +21,10 @@
     <button data-view="journal">Journal</button>
     <button data-view="learn">Playbook</button>
   </nav>
+  <div class="mode-toggle" id="modeToggle" title="Which horizon the engine analyzes on — applies to Analyze, Scanner and Watchlist">
+    <label><input type="radio" name="tsmode" value="swing" checked> Swing <span>daily · weekly</span></label>
+    <label><input type="radio" name="tsmode" value="intraday"> Intraday <span>15m · hourly</span></label>
+  </div>
   <div class="market-chips" id="marketChips"></div>
 </header>
 
@@ -29,7 +33,7 @@
   <!-- ================= ANALYZE ================= -->
   <section class="view active" id="view-analyze">
     <div class="search-wrap">
-      <input id="searchInput" placeholder="Enter a stock or crypto — e.g. AAPL, TSLA, BTC, ETH, NVDA…" autocomplete="off" spellcheck="false" autofocus>
+      <input id="searchInput" placeholder="Solana token — name, symbol or mint address (e.g. SOL, JUP, BONK, WIF…)" autocomplete="off" spellcheck="false" autofocus>
       <div class="suggestions" id="suggestions"></div>
     </div>
     <div class="quick-syms" id="quickSyms"></div>
@@ -108,13 +112,13 @@
     <div class="panel">
       <div class="scan-head">
         <button id="scanBtn">Scan the market</button>
-        <span class="scan-note">Analyzes ~45 major US stocks, ETFs and top cryptos with the full engine, then ranks by setup quality. Click a row for the full analysis.</span>
+        <span class="scan-note">Analyzes the most-traded Solana tokens (by 24h volume, junk filtered out) with the full engine, then ranks by setup quality. Click a row for the full analysis.</span>
       </div>
       <div id="scanStatus"></div>
       <div style="overflow-x:auto">
         <table class="scan" id="scanTable" style="display:none">
           <thead><tr>
-            <th>#</th><th>Asset</th><th>Price</th><th>Day</th><th>Score</th><th>Verdict</th><th title="Short-term swing structure — can disagree with the long-term 200-day MA regime the score also weighs" style="cursor:help;border-bottom:1px dotted var(--paper-faint)">Trend</th><th>RSI</th><th>Top signal</th>
+            <th>#</th><th>Asset</th><th>Price</th><th id="scanChgTh">Day</th><th>Score</th><th>Verdict</th><th title="Short-term swing structure — can disagree with the long-term 200-day MA regime the score also weighs" style="cursor:help;border-bottom:1px dotted var(--paper-faint)">Trend</th><th>RSI</th><th>Top signal</th>
           </tr></thead>
           <tbody id="scanBody"></tbody>
         </table>

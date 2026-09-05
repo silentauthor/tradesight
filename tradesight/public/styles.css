@@ -67,7 +67,20 @@ nav button {
 }
 nav button.active { color: var(--paper); border-bottom-color: var(--brass); }
 nav button:hover { color: var(--paper); }
-.market-chips { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.mode-toggle {
+  margin-left: auto; display: flex; gap: 2px;
+  background: var(--ink-3); border: 1px solid var(--line); border-radius: 4px; padding: 2px;
+}
+.mode-toggle label {
+  display: flex; align-items: baseline; gap: 6px; padding: 5px 10px; border-radius: 3px;
+  cursor: pointer; font-family: var(--font-sans); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .07em; color: var(--paper-dim); white-space: nowrap;
+}
+.mode-toggle label span { font-family: var(--font-mono); font-size: 9.5px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--paper-faint); }
+.mode-toggle label:has(input:checked) { background: var(--brass-soft); color: var(--paper); }
+.mode-toggle label:has(input:checked) span { color: var(--paper); opacity: .75; }
+.mode-toggle input { accent-color: var(--brass); margin: 0; align-self: center; }
+.market-chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip {
   font-family: var(--font-mono); font-size: 11.5px; padding: 4px 9px; border-radius: 3px;
   background: var(--ink-3); border: 1px solid var(--line); color: var(--paper-dim);
