@@ -297,6 +297,26 @@ const TA = (() => {
     };
   }
 
+  /* Resample a daily candle array into weekly candles (UTC, week starts Monday).
+     Used as the higher-timeframe series when the data source has no native
+     weekly feed (Dhan). open = first day, close = last day, high/low = extremes,
+     volume = sum. */
+  function resampleWeekly(candles) {
+    const weeks = new Map();
+    for (const c of candles) {
+      const d = new Date(c.t);
+      const dow = (d.getUTCDay() + 6) % 7; // 0 = Monday
+      const monday = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dow);
+      let w = weeks.get(monday);
+      if (!w) { w = { t: monday, o: c.o, h: c.h, l: c.l, c: c.c, v: 0 }; weeks.set(monday, w); }
+      w.h = Math.max(w.h, c.h);
+      w.l = Math.min(w.l, c.l);
+      w.c = c.c;
+      w.v += c.v || 0;
+    }
+    return [...weeks.values()].sort((a, b) => a.t - b.t);
+  }
+
   /* Everything the app needs, computed once. */
   function analyzeSeries(candles) {
     const closes = candles.map(c => c.c);
@@ -340,5 +360,5 @@ const TA = (() => {
     };
   }
 
-  return { sma, ema, rsi, macd, bollinger, atr, obv, adx, percentileRank, volumeProfile, swings, srLevels, marketStructure, analyzeSeries };
+  return { sma, ema, rsi, macd, bollinger, atr, obv, adx, percentileRank, volumeProfile, swings, srLevels, marketStructure, resampleWeekly, analyzeSeries };
 })();

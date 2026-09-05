@@ -44,31 +44,16 @@ const MODES = {
   },
 };
 
-/* ---------------- state ---------------- */
-const state = {
-  current: null,        // {asset, assessment, daily, weekly}
-  mode: (() => { try { return MODES[localStorage.tsMode] ? localStorage.tsMode : 'swing'; } catch { return 'swing'; } })(),
-  marketCtx: {},        // regime for the ACTIVE mode
-  marketCtxByMode: {},  // cached regime per mode
-  chart: null,
-  scanCache: null,
-};
 /* Solana SPL mint address (base58). */
 const ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-/* Wrapped SOL — the market-tide anchor; this mint never changes. */
+/* Dhan instrument id: "<EXCHANGE_SEGMENT>:<securityId>", e.g. "NSE_EQ:2885". */
+const DHAN_ADDR_RE = /^[A-Z_]{3,10}:\d{1,12}$/;
+/* Wrapped SOL — the Birdeye market-tide anchor; this mint never changes. */
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
-
-const store = {
-  // Watchlist now holds mint addresses — drop any stale ticker entries.
-  get watch() { try { return JSON.parse(localStorage.tsWatch || '[]').filter(a => ADDR_RE.test(a)); } catch { return []; } },
-  set watch(v) { localStorage.tsWatch = JSON.stringify(v); },
-  get journal() { try { return JSON.parse(localStorage.tsJournal || '[]'); } catch { return []; } },
-  set journal(v) { localStorage.tsJournal = JSON.stringify(v); },
-};
 
 /* Well-known Solana tokens — verified mints, so "SOL"/"BONK"/… resolve instantly
    without a search round-trip. Anything else is resolved via /api/search. */
-const KNOWN = {
+const KNOWN_BIRDEYE = {
   SOL: SOL_MINT, WSOL: SOL_MINT, SOLANA: SOL_MINT,
   JUP: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
   JTO: 'jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL',
@@ -82,16 +67,69 @@ const KNOWN = {
   BONK: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
   PENGU: '2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv',
 };
+/* Common NSE large-caps — skip the scrip-master search round-trip. */
+const KNOWN_DHAN = {
+  RELIANCE: 'NSE_EQ:2885', TCS: 'NSE_EQ:11536', INFY: 'NSE_EQ:1594',
+  HDFCBANK: 'NSE_EQ:1333', ICICIBANK: 'NSE_EQ:4963', SBIN: 'NSE_EQ:3045',
+  ITC: 'NSE_EQ:1660', LT: 'NSE_EQ:11483', 'BHARTIARTL': 'NSE_EQ:10604',
+  HINDUNILVR: 'NSE_EQ:1394', NIFTY: 'IDX_I:13',
+};
 
-/* Resolve a user-typed name / symbol / address to a mint address. */
+/* ---------------- data source (Birdeye / Solana  vs  Dhan / NSE-BSE) ----------
+   Switches token resolution and every /api/* feed. The engine, the Swing/
+   Intraday toggle and the rule base are unchanged — only the market being
+   analyzed, its currency and its tide anchor differ. */
+const SOURCES = {
+  birdeye: {
+    id: 'birdeye', label: 'Solana', sub: 'Birdeye', ccy: '$', isCrypto: true,
+    addrRe: ADDR_RE, known: KNOWN_BIRDEYE,
+    tideAddress: SOL_MINT, tideLabel: 'SOL',
+    placeholder: 'Solana token — name, symbol or mint address (e.g. SOL, JUP, BONK, WIF…)',
+    quickSyms: ['SOL', 'JUP', 'JTO', 'BONK', 'WIF', 'PYTH', 'JLP'],
+    noMatch: (s) => `no Solana token matches "${s}"`,
+  },
+  dhan: {
+    id: 'dhan', label: 'India', sub: 'Dhan · NSE/BSE', ccy: '₹', isCrypto: false,
+    addrRe: DHAN_ADDR_RE, known: KNOWN_DHAN,
+    tideAddress: 'IDX_I:13', tideLabel: 'NIFTY 50',
+    placeholder: 'NSE / BSE stock — company name or ticker (e.g. RELIANCE, TCS, HDFC Bank…)',
+    quickSyms: ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'ITC'],
+    noMatch: (s) => `no NSE/BSE stock matches "${s}"`,
+  },
+};
+
+/* ---------------- state ---------------- */
+const state = {
+  current: null,        // {asset, assessment, daily, weekly}
+  mode: (() => { try { return MODES[localStorage.tsMode] ? localStorage.tsMode : 'swing'; } catch { return 'swing'; } })(),
+  source: (() => { try { return SOURCES[localStorage.tsSource] ? localStorage.tsSource : 'birdeye'; } catch { return 'birdeye'; } })(),
+  marketCtx: {},        // regime for the ACTIVE mode+source
+  marketCtxByMode: {},  // cached regime, keyed "<source>:<mode>"
+  chart: null,
+  scanCache: null,
+};
+const SRC = () => SOURCES[state.source];
+const CCY = () => SRC().ccy;
+const anyAddr = (a) => ADDR_RE.test(a) || DHAN_ADDR_RE.test(a);
+
+const store = {
+  // Watchlist holds mint addresses (Birdeye) and "<seg>:<id>" ids (Dhan).
+  get watch() { try { return JSON.parse(localStorage.tsWatch || '[]').filter(anyAddr); } catch { return []; } },
+  set watch(v) { localStorage.tsWatch = JSON.stringify(v); },
+  get journal() { try { return JSON.parse(localStorage.tsJournal || '[]'); } catch { return []; } },
+  set journal(v) { localStorage.tsJournal = JSON.stringify(v); },
+};
+
+/* Resolve a user-typed name / symbol / address to the active source's id. */
 async function resolveToAddress(q) {
   const s = String(q || '').trim();
-  if (ADDR_RE.test(s)) return s;
-  const hit = KNOWN[s.toUpperCase()];
+  const src = SRC();
+  if (src.addrRe.test(s)) return s;
+  const hit = src.known[s.toUpperCase()];
   if (hit) return hit;
-  const { quotes } = await api('/api/search?q=' + encodeURIComponent(s));
+  const { quotes } = await api(`/api/search?q=${encodeURIComponent(s)}&source=${state.source}`);
   if (quotes && quotes[0] && quotes[0].address) return quotes[0].address;
-  throw new Error(`no Solana token matches "${s}"`);
+  throw new Error(src.noMatch(s));
 }
 
 /* ---------------- navigation ---------------- */
@@ -106,24 +144,25 @@ document.querySelectorAll('nav button').forEach(btn => {
 function gotoView(name) { document.querySelector(`nav button[data-view="${name}"]`).click(); }
 
 /* ---------------- market context (the tide) ---------------- */
-async function loadMarketContext(mode = state.mode) {
-  const M = MODES[mode];
+const ctxKey = (mode, source) => `${source}:${mode}`;
+
+async function loadMarketContext(mode = state.mode, source = state.source) {
+  const M = MODES[mode], S = SOURCES[source];
   try {
-    const sol = await api(`/api/chart?address=${SOL_MINT}&range=${M.tide.range}&interval=${M.tide.interval}`);
-    const solA = TA.analyzeSeries(sol.candles);
-    const ctx = Engine.marketRegime(solA);
-    ctx._sol = sol;
-    state.marketCtxByMode[mode] = ctx;
-    if (mode === state.mode) {
+    const anchor = await api(`/api/chart?address=${encodeURIComponent(S.tideAddress)}&range=${M.tide.range}&interval=${M.tide.interval}&source=${source}`);
+    const ctx = Engine.marketRegime(TA.analyzeSeries(anchor.candles), S.tideLabel);
+    ctx._anchor = anchor;
+    state.marketCtxByMode[ctxKey(mode, source)] = ctx;
+    if (mode === state.mode && source === state.source) {
       state.marketCtx = ctx;
-      const chg = ((sol.price - sol.candles[sol.candles.length - 2].c) / sol.candles[sol.candles.length - 2].c) * 100;
+      const chg = ((anchor.price - anchor.candles[anchor.candles.length - 2].c) / anchor.candles[anchor.candles.length - 2].c) * 100;
       $('marketChips').innerHTML =
-        `<span class="chip"><b>SOL</b> ${fmtPx(sol.price)} <span class="${chg >= 0 ? 'pos' : 'neg'}">${fmtPct(chg)}</span></span>`
+        `<span class="chip"><b>${esc(S.tideLabel)}</b> ${S.ccy}${fmtPx(anchor.price)} <span class="${chg >= 0 ? 'pos' : 'neg'}">${fmtPct(chg)}</span></span>`
         + `<span class="chip">${M.label} tide: <b class="${ctx.regime === 'risk-on' ? 'pos' : ctx.regime === 'risk-off' ? 'neg' : ''}">${ctx.regime}</b></span>`;
     }
     return ctx;
   } catch (e) {
-    if (mode === state.mode) {
+    if (mode === state.mode && source === state.source) {
       state.marketCtx = {};
       $('marketChips').innerHTML = `<span class="chip">market data unavailable${e && e.message ? ' — ' + esc(e.message) : ''}</span>`;
     }
@@ -131,26 +170,55 @@ async function loadMarketContext(mode = state.mode) {
   }
 }
 
-/* The tide for a mode — from cache if already fetched, otherwise fetch it. */
+/* The tide for the active source + a mode — from cache if already fetched. */
 async function marketCtxFor(mode) {
-  return state.marketCtxByMode[mode] || await loadMarketContext(mode);
+  return state.marketCtxByMode[ctxKey(mode, state.source)] || await loadMarketContext(mode, state.source);
 }
 
-/* ---------------- horizon toggle ---------------- */
-document.querySelectorAll('#modeToggle input').forEach(r => { r.checked = r.value === state.mode; });
-document.querySelectorAll('#modeToggle input').forEach(radio => {
-  radio.onchange = async () => {
-    if (!radio.checked || radio.value === state.mode) return;
-    state.mode = radio.value;
-    try { localStorage.tsMode = state.mode; } catch { /* ignore */ }
-    await loadMarketContext(state.mode);
-    // re-run whatever's on screen for the new horizon
-    if (state.current) analyze(state.current.asset.address);
-    if (state.scanCache) runScan();
-    const wl = document.querySelector('#view-watchlist.active');
-    if (wl) renderWatchlist();
-  };
+/* Re-run whatever analysis view is currently on screen. */
+function rerunActiveView() {
+  if (state.current) analyze(state.current.asset.address);
+  if (state.scanCache) runScan();
+  if (document.querySelector('#view-watchlist.active')) renderWatchlist();
+}
+
+/* ---------------- horizon + source toggles ---------------- */
+function wireToggle(sel, key, storageKey, onChange) {
+  document.querySelectorAll(`${sel} input`).forEach(r => { r.checked = r.value === state[key]; });
+  document.querySelectorAll(`${sel} input`).forEach(radio => {
+    radio.onchange = async () => {
+      if (!radio.checked || radio.value === state[key]) return;
+      state[key] = radio.value;
+      try { localStorage[storageKey] = state[key]; } catch { /* ignore */ }
+      await onChange();
+    };
+  });
+}
+wireToggle('#modeToggle', 'mode', 'tsMode', async () => {
+  await loadMarketContext(state.mode);
+  rerunActiveView();
 });
+wireToggle('#sourceToggle', 'source', 'tsSource', async () => {
+  applySourceChrome();
+  state.current = null; state.scanCache = null; // stale — different market
+  $('analyzeResult').style.display = 'none';
+  $('scanTable').style.display = 'none';
+  $('scanStatus').innerHTML = '';
+  if (document.querySelector('#view-analyze.active')) {
+    $('analyzeStatus').innerHTML = `<div class="status-line">Data source is now <b>${esc(SRC().label)} · ${esc(SRC().sub)}</b> — search a ${state.source === 'dhan' ? 'NSE/BSE stock' : 'Solana token'} to analyze.</div>`;
+  }
+  await loadMarketContext(state.mode);
+  if (document.querySelector('#view-watchlist.active')) renderWatchlist();
+});
+
+/* Swap search placeholder + quick-symbol chips for the active source. */
+function applySourceChrome() {
+  const S = SRC();
+  $('searchInput').placeholder = S.placeholder;
+  $('searchInput').value = '';
+  $('quickSyms').innerHTML = 'Try: ' + S.quickSyms
+    .map(s => `<button onclick="analyze('${S.known[s] || s}')">${esc(s)}</button>`).join('');
+}
 
 /* ---------------- search ---------------- */
 let sugTimer = null, sugItems = [], sugSel = -1;
@@ -160,11 +228,11 @@ $('searchInput').addEventListener('input', (e) => {
   if (!q) { closeSug(); return; }
   sugTimer = setTimeout(async () => {
     try {
-      const { quotes } = await api('/api/search?q=' + encodeURIComponent(q));
+      const { quotes } = await api(`/api/search?q=${encodeURIComponent(q)}&source=${state.source}`);
       sugItems = quotes; sugSel = -1;
       const box = $('suggestions');
       box.innerHTML = quotes.map((s, i) =>
-        `<div data-i="${i}"><span class="sym">${esc(s.symbol)}</span><span class="nm">${esc(s.name)}</span><span class="tp">Solana</span></div>`).join('');
+        `<div data-i="${i}"><span class="sym">${esc(s.symbol)}</span><span class="nm">${esc(s.name)}</span><span class="tp">${esc(s.exchange || SRC().label)}</span></div>`).join('');
       box.classList.toggle('open', quotes.length > 0);
       box.querySelectorAll('div').forEach(d => d.onclick = () => { closeSug(); analyze(sugItems[+d.dataset.i].address); });
     } catch { closeSug(); }
@@ -187,26 +255,30 @@ $('searchInput').addEventListener('keydown', (e) => {
   } else if (e.key === 'Escape') closeSug();
 });
 function closeSug() { $('suggestions').classList.remove('open'); sugItems = []; sugSel = -1; }
-$('quickSyms').innerHTML = 'Try: ' + ['SOL','JUP','JTO','BONK','WIF','PYTH','JLP'].map(s => `<button onclick="analyze('${KNOWN[s]}')">${s}</button>`).join('');
 
 /* ---------------- analyze ---------------- */
 async function analyze(query) {
   gotoView('analyze');
-  const M = MODES[state.mode];
+  const M = MODES[state.mode], src = state.source;
+  // Dhan has no native weekly feed — resample the daily series for the swing HTF.
+  const resampleHtf = src === 'dhan' && M.higher.interval === '1wk';
   $('searchInput').value = query;
   $('analyzeResult').style.display = 'none';
   $('analyzeStatus').innerHTML = `<div class="status-line"><span class="spinner"></span>Running the ${M.label.toLowerCase()} engine (${M.primary.interval} candles, ${M.higher.interval} higher-timeframe) on <b>${esc(query)}</b>…</div>`;
   try {
     const address = await resolveToAddress(query);
     const [primaryData, higherData, marketCtx] = await Promise.all([
-      api(`/api/chart?address=${encodeURIComponent(address)}&range=${M.primary.range}&interval=${M.primary.interval}`),
-      api(`/api/chart?address=${encodeURIComponent(address)}&range=${M.higher.range}&interval=${M.higher.interval}`).catch(() => ({ candles: [] })),
+      api(`/api/chart?address=${encodeURIComponent(address)}&range=${M.primary.range}&interval=${M.primary.interval}&source=${src}`),
+      resampleHtf
+        ? Promise.resolve({ candles: [] })
+        : api(`/api/chart?address=${encodeURIComponent(address)}&range=${M.higher.range}&interval=${M.higher.interval}&source=${src}`).catch(() => ({ candles: [] })),
       marketCtxFor(state.mode),
     ]);
     if (!primaryData.candles || primaryData.candles.length < M.minBars) throw new Error(`not enough ${M.primary.interval} price history to analyze safely`);
-    const asset = { ...primaryData, isCrypto: true, mode: state.mode };
+    const asset = { ...primaryData, isCrypto: SRC().isCrypto, mode: state.mode, source: src };
     const daily = TA.analyzeSeries(asset.candles);
-    const weekly = higherData.candles && higherData.candles.length > 30 ? TA.analyzeSeries(higherData.candles) : null;
+    const htfCandles = resampleHtf ? TA.resampleWeekly(asset.candles) : (higherData.candles || []);
+    const weekly = htfCandles.length > 30 ? TA.analyzeSeries(htfCandles) : null;
     const assessment = Engine.assess(asset, daily, weekly, marketCtx, M.tf());
     state.current = { asset, assessment, daily, weekly };
     renderAnalysis();
@@ -214,7 +286,10 @@ async function analyze(query) {
     $('analyzeStatus').innerHTML = '';
     $('analyzeResult').style.display = '';
   } catch (e) {
-    $('analyzeStatus').innerHTML = `<div class="status-line err">Could not analyze "${esc(query)}": ${esc(e.message)}. Try a Solana token symbol (SOL, JUP, BONK…) or paste its mint address.</div>`;
+    const hint = SRC().id === 'dhan'
+      ? 'Try an NSE/BSE ticker (RELIANCE, TCS, INFY…) or a company name.'
+      : 'Try a Solana token symbol (SOL, JUP, BONK…) or paste its mint address.';
+    $('analyzeStatus').innerHTML = `<div class="status-line err">Could not analyze "${esc(query)}": ${esc(e.message)}. ${hint}</div>`;
   }
 }
 window.analyze = analyze;
@@ -225,12 +300,14 @@ function renderAnalysis() {
   const prev = asset.candles[asset.candles.length - 2];
   const chg = prev ? ((asset.price - prev.c) / prev.c) * 100 : null;
 
+  const cur = asset.currency === 'INR' ? '₹' : '$';
+  const htfLabel = (asset.source === 'dhan' && M.higher.interval === '1wk') ? 'weekly (resampled)' : M.higher.interval;
   $('assetHead').innerHTML = `
     <span class="nm">${esc(asset.name)}</span>
-    <span class="meta">${esc(asset.symbol)} · Solana${asset.liquidity ? ' · $' + (asset.liquidity / 1e6).toFixed(1) + 'M liquidity' : ''}</span>
-    <span class="px">${fmtPx(asset.price)} <span class="${chg >= 0 ? 'pos' : 'neg'}">${fmtPct(chg)}</span></span>
-    <span class="meta">Range H/L: ${fmtPx(asset.low52)} – ${fmtPx(asset.high52)}</span>
-    <span class="chip">${M.label} horizon · ${M.primary.interval} candles · ${M.higher.interval} higher-timeframe</span>`;
+    <span class="meta">${esc(asset.symbol)} · ${esc(asset.exchange || 'Solana')}${asset.liquidity ? ' · $' + (asset.liquidity / 1e6).toFixed(1) + 'M liquidity' : ''}</span>
+    <span class="px">${cur}${fmtPx(asset.price)} <span class="${chg >= 0 ? 'pos' : 'neg'}">${fmtPct(chg)}</span></span>
+    <span class="meta">Range H/L: ${cur}${fmtPx(asset.low52)} – ${cur}${fmtPx(asset.high52)}</span>
+    <span class="chip">${M.label} horizon · ${M.primary.interval} candles · ${esc(htfLabel)} higher-timeframe</span>`;
 
   // score ring — instrument dial. Tick marks mark the actual tier thresholds
   // (42/58/72), so the ring encodes real information, not just a filled arc.
@@ -300,9 +377,9 @@ function renderAnalysis() {
   // plan
   if (R.plan) {
     $('planRows').innerHTML = `
-      <div class="plan-row entry"><span class="k">Entry zone</span><span class="p">${fmtPx(R.plan.entryLow)} – ${fmtPx(R.plan.entryHigh)}</span><span class="why">${esc(R.plan.entryNote)}</span></div>
-      <div class="plan-row stop"><span class="k">Stop loss</span><span class="p">${fmtPx(R.plan.stop)} (−${R.plan.stopPct}%)</span><span class="why">${esc(R.plan.stopNote)}</span></div>
-      ${R.plan.targets.map(t => `<div class="plan-row target"><span class="k">Exit</span><span class="p">${fmtPx(t.price)}</span><span class="rr-badge">${t.rr}R</span><span class="why">${esc(t.label)}</span></div>`).join('')}
+      <div class="plan-row entry"><span class="k">Entry zone</span><span class="p">${cur}${fmtPx(R.plan.entryLow)} – ${cur}${fmtPx(R.plan.entryHigh)}</span><span class="why">${esc(R.plan.entryNote)}</span></div>
+      <div class="plan-row stop"><span class="k">Stop loss</span><span class="p">${cur}${fmtPx(R.plan.stop)} (−${R.plan.stopPct}%)</span><span class="why">${esc(R.plan.stopNote)}</span></div>
+      ${R.plan.targets.map(t => `<div class="plan-row target"><span class="k">Exit</span><span class="p">${cur}${fmtPx(t.price)}</span><span class="rr-badge">${t.rr}R</span><span class="why">${esc(t.label)}</span></div>`).join('')}
       <div style="margin-top:6px"><button class="star-btn" id="logTradeBtn">Log to journal</button></div>`;
     $('planExitRules').innerHTML = '<b>Exit rules:</b><br>' + R.plan.exitRules.map(r => '• ' + esc(r)).join('<br>');
     $('logTradeBtn').onclick = () => {
@@ -382,32 +459,33 @@ function runCalc() {
   const out = Engine.positionSize(acc, risk, entry, stop);
   if (!out) { $('calcOut').innerHTML = '<span style="color:var(--muted)">Enter account, entry and stop (stop must be below entry).</span>'; return; }
   $('calcOut').innerHTML =
-    `Buy <b>${out.units}</b> units ≈ <b>$${out.value.toLocaleString()}</b> position · risking <b>$${out.riskAmt.toLocaleString()}</b> (${risk}% of account) if stopped out.` +
+    `Buy <b>${out.units}</b> units ≈ <b>${CCY()}${out.value.toLocaleString()}</b> position · risking <b>${CCY()}${out.riskAmt.toLocaleString()}</b> (${risk}% of account) if stopped out.` +
     (out.capped ? ` <span style="color:var(--warn)">Size capped at ${KB.riskManagement.maxPositionPct}% of account (Stewie's max-position rule).</span>` : '');
 }
 
 /* ---------------- scanner ---------------- */
 $('scanBtn').onclick = runScan;
 async function runScan() {
-  const M = MODES[state.mode];
+  const M = MODES[state.mode], src = state.source, S = SRC();
   $('scanBtn').disabled = true;
   $('scanTable').style.display = 'none';
-  $('scanStatus').innerHTML = `<div class="status-line"><span class="spinner"></span>Fetching the most-traded Solana tokens…</div>`;
+  const universe = src === 'dhan' ? 'NIFTY 50 stocks' : 'most-traded Solana tokens';
+  $('scanStatus').innerHTML = `<div class="status-line"><span class="spinner"></span>Fetching the ${universe}…</div>`;
   try {
     const [list, marketCtx] = await Promise.all([
-      api(`/api/tokenlist?limit=${M.scanLimit}`),
+      api(`/api/tokenlist?limit=${M.scanLimit}&source=${src}`),
       marketCtxFor(state.mode),
     ]);
     const addrs = list.map(t => t.address);
-    if (!addrs.length) throw new Error('token list came back empty');
-    $('scanStatus').innerHTML = `<div class="status-line"><span class="spinner"></span>Scanning ${addrs.length} tokens on the ${M.label.toLowerCase()} horizon (${M.primary.interval} candles)…</div>`;
-    const batch = await api(`/api/batch?addresses=${addrs.join(',')}&range=${M.scanRange}&interval=${M.primary.interval}`);
+    if (!addrs.length) throw new Error('instrument list came back empty');
+    $('scanStatus').innerHTML = `<div class="status-line"><span class="spinner"></span>Scanning ${addrs.length} on the ${M.label.toLowerCase()} horizon (${M.primary.interval} candles)…</div>`;
+    const batch = await api(`/api/batch?addresses=${addrs.map(encodeURIComponent).join(',')}&range=${M.scanRange}&interval=${M.primary.interval}&source=${src}`);
     const rows = [];
     for (const addr of addrs) {
       const d = batch[addr];
       if (!d || d.error || !d.candles || d.candles.length < M.minBars) continue;
       try {
-        const asset = { ...d, isCrypto: true, mode: state.mode };
+        const asset = { ...d, isCrypto: S.isCrypto, mode: state.mode, source: src };
         const daily = TA.analyzeSeries(asset.candles);
         const R = Engine.assess(asset, daily, null, marketCtx, M.tf());
         const prev = asset.candles[asset.candles.length - 2];
@@ -420,6 +498,10 @@ async function runScan() {
         });
       } catch { /* skip token */ }
     }
+    if (!rows.length) {
+      const firstErr = addrs.map(a => batch[a]).find(d => d && d.error);
+      throw new Error(firstErr ? firstErr.error : 'no instrument returned enough history to analyze');
+    }
     rows.sort((a, b) => b.score - a.score);
     state.scanCache = rows;
     $('scanChgTh').textContent = state.mode === 'intraday' ? '15m' : 'Day';
@@ -427,7 +509,7 @@ async function runScan() {
       <tr class="row" onclick="analyze('${r.addr}')">
         <td>${i + 1}</td>
         <td><b>${esc(r.sym)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td>
-        <td>${fmtPx(r.price)}</td>
+        <td>${S.ccy}${fmtPx(r.price)}</td>
         <td class="${r.chg >= 0 ? 'pos' : 'neg'}">${fmtPct(r.chg)}</td>
         <td><span class="score-pill" style="background:${tierColor(r.score).bg};color:${tierColor(r.score).fg}">${r.score}</span></td>
         <td><span class="badge ${r.verdictClass}">${esc(r.verdict.split(' — ')[0])}</span></td>
@@ -436,7 +518,7 @@ async function runScan() {
         <td style="max-width:320px"><small>${esc(r.top)}</small></td>
       </tr>`).join('');
     const best = rows.filter(r => r.score >= 58).length;
-    $('scanStatus').innerHTML = `<div class="status-line">Done — ${rows.length} tokens analyzed, <b style="color:var(--up)">${best}</b> currently rate "tradeable". Top of the table = best setups now.</div>`;
+    $('scanStatus').innerHTML = `<div class="status-line">Done — ${rows.length} analyzed, <b style="color:var(--up)">${best}</b> currently rate "tradeable". Top of the table = best setups now.</div>`;
     $('scanTable').style.display = '';
   } catch (e) {
     $('scanStatus').innerHTML = `<div class="status-line err">Scan failed: ${esc(e.message)}</div>`;
@@ -446,20 +528,23 @@ async function runScan() {
 
 /* ---------------- watchlist ---------------- */
 async function renderWatchlist() {
-  const addrs = store.watch;
-  if (!addrs.length) { $('wlStatus').innerHTML = '<div class="status-line">Watchlist is empty — add tokens with the ☆ Watch button on any analysis.</div>'; $('wlTable').style.display = 'none'; return; }
-  const M = MODES[state.mode];
-  $('wlStatus').innerHTML = `<div class="status-line"><span class="spinner"></span>Refreshing ${addrs.length} token${addrs.length === 1 ? '' : 's'} on the ${M.label.toLowerCase()} horizon…</div>`;
+  const M = MODES[state.mode], src = state.source, S = SRC();
+  const all = store.watch;
+  const addrs = all.filter(a => S.addrRe.test(a)); // this source's entries only
+  const otherN = all.length - addrs.length;
+  const otherNote = otherN ? ` <span style="color:var(--paper-faint)">(${otherN} on the other data source — switch Source to see them)</span>` : '';
+  if (!addrs.length) { $('wlStatus').innerHTML = `<div class="status-line">No ${S.label} watchlist entries — add them with the ☆ Watch button on any analysis.${otherNote}</div>`; $('wlTable').style.display = 'none'; return; }
+  $('wlStatus').innerHTML = `<div class="status-line"><span class="spinner"></span>Refreshing ${addrs.length} on the ${M.label.toLowerCase()} horizon…${otherNote}</div>`;
   try {
     const [batch, marketCtx] = await Promise.all([
-      api(`/api/batch?addresses=${addrs.join(',')}&range=${M.scanRange}&interval=${M.primary.interval}`),
+      api(`/api/batch?addresses=${addrs.map(encodeURIComponent).join(',')}&range=${M.scanRange}&interval=${M.primary.interval}&source=${src}`),
       marketCtxFor(state.mode),
     ]);
     const rows = [];
     for (const addr of addrs) {
       const d = batch[addr];
       if (!d || d.error || !d.candles || d.candles.length < M.minBars) { rows.push({ addr, sym: d && d.symbol || addr.slice(0, 6), err: true }); continue; }
-      const asset = { ...d, isCrypto: true, mode: state.mode };
+      const asset = { ...d, isCrypto: S.isCrypto, mode: state.mode, source: src };
       const R = Engine.assess(asset, TA.analyzeSeries(asset.candles), null, marketCtx, M.tf());
       const prev = asset.candles[asset.candles.length - 2];
       rows.push({ addr, sym: d.symbol, price: d.price, chg: prev ? ((d.price - prev.c) / prev.c) * 100 : null, score: R.score, verdict: R.verdict.split(' — ')[0], verdictClass: R.verdictClass });
@@ -468,7 +553,7 @@ async function renderWatchlist() {
       ? `<tr><td><b>${esc(r.sym)}</b></td><td colspan="4" style="color:var(--muted)">no data</td><td><button class="wl-actions" onclick="unwatch('${r.addr}')">✕</button></td></tr>`
       : `<tr class="row" onclick="analyze('${r.addr}')">
           <td><b>${esc(r.sym)}</b></td>
-          <td>${fmtPx(r.price)}</td>
+          <td>${S.ccy}${fmtPx(r.price)}</td>
           <td class="${r.chg >= 0 ? 'pos' : 'neg'}">${fmtPct(r.chg)}</td>
           <td><b>${r.score}</b></td>
           <td><span class="badge ${r.verdictClass}">${esc(r.verdict)}</span></td>
@@ -559,4 +644,5 @@ function renderPlaybook() {
 /* ---------------- init ---------------- */
 $('disclaimer').textContent = KB.disclaimer;
 renderPlaybook();
+applySourceChrome();
 loadMarketContext();

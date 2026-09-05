@@ -67,8 +67,9 @@ nav button {
 }
 nav button.active { color: var(--paper); border-bottom-color: var(--brass); }
 nav button:hover { color: var(--paper); }
+.hdr-right { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
 .mode-toggle {
-  margin-left: auto; display: flex; gap: 2px;
+  display: flex; gap: 2px;
   background: var(--ink-3); border: 1px solid var(--line); border-radius: 4px; padding: 2px;
 }
 .mode-toggle label {

@@ -241,18 +241,25 @@ const Engine = (() => {
     }
 
     // ---- market context (the tide) ----
+    const anchorLabel = marketCtx.anchorLabel || 'SOL';
+    const anchorTrend = marketCtx.anchorTrend ?? marketCtx.solTrend;
     if (marketCtx.regime === 'risk-off') add(-8, `Overall market is risk-off (${marketCtx.detail}) — long setups fail more in a falling tide.`, 'Stewie, Zuckerman');
     if (marketCtx.regime === 'risk-on') add(4, `Overall market is supportive (${marketCtx.detail}).`, 'Stewie');
-    const isSol = /^W?SOL$/i.test(asset.symbol || '') || asset.address === 'So11111111111111111111111111111111111111112';
-    if (marketCtx.solTrend === 'down' && !isSol) {
-      add(-8, 'SOL is trending down — Solana tokens are high-beta to SOL and rarely swim against it.', 'Zuckerman');
+    const isAnchor = new RegExp(`^W?${anchorLabel.replace(/[^A-Z0-9]/gi, '')}$`, 'i').test(asset.symbol || '')
+      || asset.address === 'So11111111111111111111111111111111111111112'
+      || asset.type === 'INDEX';
+    if (anchorTrend === 'down' && !isAnchor) {
+      if (asset.isCrypto) add(-8, 'SOL is trending down — Solana tokens are high-beta to SOL and rarely swim against it.', 'Zuckerman');
+      else add(-8, `The ${anchorLabel} is trending down — individual names fail more in a falling tide; reduce size or sit out.`, 'Stewie, Zuckerman');
     }
 
-    // ---- liquidity (on-chain) ----
-    if (!isSol && asset.liquidity != null && asset.liquidity < 1e6) {
+    // ---- liquidity ----
+    const ccy = asset.currency === 'INR' ? '₹' : '$';
+    const thinCashPerDay = asset.currency === 'INR' ? 3e7 : 5e5; // ~₹3 cr/day vs ~$500k/day
+    if (!isAnchor && asset.liquidity != null && asset.liquidity < 1e6) {
       flag(`Thin on-chain liquidity (~$${(asset.liquidity / 1e6).toFixed(2)}M pooled) — slippage and manipulation risk; the books say trade liquid assets only.`, 'Zuckerman');
-    } else if (L.volAvg != null && L.volAvg * price < 5e5) {
-      flag(`Thin traded volume (~$${(L.volAvg * price / 1e3).toFixed(0)}k/day average) — slippage and manipulation risk; the books say trade liquid assets only.`, 'Zuckerman');
+    } else if (L.volAvg != null && L.volAvg * price < thinCashPerDay) {
+      flag(`Thin traded volume (~${ccy}${(L.volAvg * price / 1e3).toFixed(0)}k/day average) — slippage and manipulation risk; the books say trade liquid assets only.`, 'Zuckerman');
     }
 
     // ---- build trade plan ----
@@ -461,27 +468,29 @@ const Engine = (() => {
     };
   }
 
-  /* Market regime from the SOL series (the "tide"). SOL is the beta anchor for
-     the entire Solana token market — when SOL is weak, tokens bleed harder and
-     long setups fail more often (Stewie/Zuckerman: trade with the tide). */
-  function marketRegime(sol) {
+  /* Market regime from the anchor series (the "tide"). The anchor is the beta
+     reference for the whole market being analyzed — SOL for Solana tokens,
+     NIFTY 50 for NSE/BSE equities. When the anchor is weak, individual names
+     bleed harder and long setups fail more often (Stewie/Zuckerman: trade with
+     the tide). */
+  function marketRegime(anchor, label = 'SOL') {
     let riskScore = 0; const notes = [];
-    const judge = (a, label) => {
+    const judge = (a, lbl) => {
       if (!a) return;
       const L = a.latest, S = a.structure;
       const above50 = L.sma50 != null && L.price > L.sma50;
       const above200 = L.sma200 != null && L.price > L.sma200;
-      if (S.trend === 'uptrend' && above50) { riskScore++; notes.push(`${label} in uptrend`); }
-      else if (S.trend === 'downtrend' || !above200) { riskScore--; notes.push(`${label} weak (${S.trend}${above200 ? '' : ', below 200-MA'})`); }
-      else notes.push(`${label} mixed`);
+      if (S.trend === 'uptrend' && above50) { riskScore++; notes.push(`${lbl} in uptrend`); }
+      else if (S.trend === 'downtrend' || !above200) { riskScore--; notes.push(`${lbl} weak (${S.trend}${above200 ? '' : ', below 200-MA'})`); }
+      else notes.push(`${lbl} mixed`);
     };
-    judge(sol, 'SOL');
+    judge(anchor, label);
 
-    const solTrend = sol
-      ? (sol.structure.trend === 'downtrend' || (sol.latest.sma50 != null && sol.latest.price < sol.latest.sma50) ? 'down' : 'up')
+    const anchorTrend = anchor
+      ? (anchor.structure.trend === 'downtrend' || (anchor.latest.sma50 != null && anchor.latest.price < anchor.latest.sma50) ? 'down' : 'up')
       : null;
     const regime = riskScore >= 1 ? 'risk-on' : riskScore <= -1 ? 'risk-off' : 'mixed';
-    return { regime, detail: notes.join('; '), solTrend };
+    return { regime, detail: notes.join('; '), anchorTrend, anchorLabel: label, solTrend: anchorTrend };
   }
 
   return { assess, positionSize, marketRegime, nearestLevels, sqn, TF_SWING, TF_INTRADAY };

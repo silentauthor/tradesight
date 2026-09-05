@@ -13,6 +13,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const dhanSrc = require('./dhan'); // Dhan (Indian NSE/BSE) data source
 
 const PORT = process.env.PORT || 8742;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -120,7 +121,8 @@ function normalizeChart(address, ohlcvJson, overviewJson) {
   };
 }
 
-async function getChart(address, range = '1y', interval = '1d') {
+async function getChart(address, range = '1y', interval = '1d', source = 'birdeye') {
+  if (source === 'dhan') return dhanSrc.getChartDhan(address, range, interval);
   if (!ADDR_RE.test(address)) throw new Error('invalid Solana token address');
   if (!VALID_RANGE.has(range)) range = '1y';
   const type = INTERVAL_MAP[interval] || '1D';
@@ -155,6 +157,7 @@ function tradeable(t) {
 async function apiSearch(params) {
   const q = (params.get('q') || '').slice(0, 60).trim();
   if (!q) return { quotes: [] };
+  if ((params.get('source') || 'birdeye') === 'dhan') return dhanSrc.searchDhan(q);
 
   // A pasted mint address — resolve it directly.
   if (ADDR_RE.test(q)) {
@@ -194,23 +197,27 @@ async function apiSearch(params) {
 }
 
 async function apiChart(params) {
-  return getChart(params.get('address') || params.get('symbol') || '', params.get('range') || '1y', params.get('interval') || '1d');
+  const source = params.get('source') || 'birdeye';
+  return getChart(params.get('address') || params.get('symbol') || '', params.get('range') || '1y', params.get('interval') || '1d', source);
 }
 
-// Batch endpoint for the scanner / watchlist: compact OHLCV for many mints,
-// limited concurrency to stay under Birdeye's rate limit.
+// Batch endpoint for the scanner / watchlist: compact OHLCV for many instruments,
+// limited concurrency to stay under the upstream rate limit.
 async function apiBatch(params) {
+  const source = params.get('source') || 'birdeye';
+  const valid = source === 'dhan' ? dhanSrc.DHAN_ADDR_RE : ADDR_RE;
   const addrs = (params.get('addresses') || params.get('symbols') || '')
-    .split(',').map(s => s.trim()).filter(s => ADDR_RE.test(s)).slice(0, 40);
+    .split(',').map(s => s.trim()).filter(s => valid.test(s)).slice(0, 50);
   const range = params.get('range') || '6mo';
   const interval = params.get('interval') || '1d';
   const out = {};
   const queue = [...addrs];
-  const workers = Array.from({ length: 5 }, async () => {
+  const concurrency = source === 'dhan' ? 3 : 5; // Dhan data APIs: 5 req/s
+  const workers = Array.from({ length: concurrency }, async () => {
     while (queue.length) {
       const addr = queue.shift();
       try {
-        out[addr] = await getChart(addr, range, interval);
+        out[addr] = await getChart(addr, range, interval, source);
       } catch (e) {
         out[addr] = { error: String(e.message || e) };
       }
@@ -220,9 +227,11 @@ async function apiBatch(params) {
   return out;
 }
 
-// Trending Solana tokens by 24h volume, curated down to things worth charting.
+// Scanner universe. Birdeye: trending Solana tokens by 24h volume, curated.
+// Dhan: NIFTY 50 constituents (Dhan has no "most active" feed).
 async function apiTokenList(params) {
   const limit = Math.min(Math.max(+params.get('limit') || 30, 1), 50);
+  if ((params.get('source') || 'birdeye') === 'dhan') return dhanSrc.niftyList(limit);
   const minLiq = Math.max(+params.get('min_liquidity') || 500000, 0);
   const json = await birdeye(
     `/defi/v3/token/list?sort_by=volume_24h_usd&sort_type=desc&min_liquidity=${minLiq}&offset=0&limit=100`,
@@ -285,5 +294,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`TradeSight running → http://localhost:${PORT}`);
-  if (!BIRDEYE_KEY) console.warn('⚠  BIRDEYE_API_KEY is not set — all /api/* calls will fail. Put it in tradesight/.env');
+  if (!BIRDEYE_KEY) console.warn('⚠  BIRDEYE_API_KEY is not set — Birdeye (Solana) /api calls will fail. Put it in tradesight/.env');
+  if (!dhanSrc.dhanConfigured()) console.warn('ℹ  DHAN_ACCESS_TOKEN is not set — the Dhan (NSE/BSE) source is unavailable until you add it to tradesight/.env');
 });
