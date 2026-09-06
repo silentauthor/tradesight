@@ -121,3 +121,20 @@ wrangler deploy
 
 This is an educational decision-support tool, not financial advice. See the
 in-app disclaimer and `knowledge.js`.
+
+## Market workspaces and trade direction
+
+The redesigned local UI has two linkable workspaces:
+
+- `/#india`: NSE/BSE **Swing** and **Intraday** Buy/Long and Sell/Short research via Dhan. Swing uses daily candles with a resampled weekly higher timeframe; Intraday uses 15-minute candles with an hourly higher timeframe. Intraday Sell means opening a short, not disposal of an existing holding.
+- `/#crypto`: **Jupiter Perps** SOL, BTC and ETH long/short research. Jupiter public `/v2/market-stats` supplies live venue price and 24h volume. Historical technical candles are **Birdeye underlying spot candles**, explicitly labeled; they are not Jupiter execution/oracle history. The existing Birdeye key remains required. No wallet is connected and no order requests are made.
+
+Jupiter market identifiers and endpoint are taken from the official [Jupiter CLI PerpsClient](https://github.com/jup-ag/cli/blob/main/src/clients/PerpsClient.ts) and [Asset definitions](https://github.com/jup-ag/cli/blob/main/src/lib/Asset.ts).
+
+Short research detects bearish EMA20 rallies and support breakdown/retests, places stops above entry, and targets structural support below entry. These numerical rules are app adaptations of the existing Stewie / Edwards & Magee notes, not validated returns. Sizing uses absolute stop distance and direction-aware net reward/risk. Perps sizing is a notional estimate; it does not calculate margin, borrow fees, liquidation or an executable quote. Verify those on Jupiter.
+
+The scanner and watchlist use the selected direction; assessments are cached separately by market, horizon, direction and instrument. Journal records include direction. Supplementary evidence and pattern panels are collapsed initially.
+
+Run direction regression checks: `node tests/directions.cjs`.
+
+These two workspaces require the local Node server. The existing Cloudflare Worker remains the older Birdeye-only backend and is not a deployment target for this version.

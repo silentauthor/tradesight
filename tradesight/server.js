@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+const jupiter = require('./jupiter');
 /**
  * TradeSight server — zero-dependency Node.js (v18+).
  * Serves the static frontend and proxies Solana token market data from the
@@ -122,6 +123,12 @@ function normalizeChart(address, ohlcvJson, overviewJson) {
 }
 
 async function getChart(address, range = '1y', interval = '1d', source = 'birdeye') {
+  if(source==='jupiter') {
+    const symbol=jupiter.market(address);
+    const [chart,venue]=await Promise.all([getChart(address,range,interval,'birdeye'),jupiter.stats(address)]);
+    return {...chart,symbol,name:symbol+' perpetual',type:'PERPETUAL',exchange:'Jupiter Perps',venuePrice:venue.price,venueVolume24h:venue.volume24h,venueAsOf:venue.fetchedAt,candleSource:'Birdeye underlying spot',executionSource:'Jupiter Perps'};
+  }
+
   if (source === 'dhan') return dhanSrc.getChartDhan(address, range, interval);
   if (!ADDR_RE.test(address)) throw new Error('invalid Solana token address');
   if (!VALID_RANGE.has(range)) range = '1y';
@@ -157,6 +164,7 @@ function tradeable(t) {
 async function apiSearch(params) {
   const q = (params.get('q') || '').slice(0, 60).trim();
   if (!q) return { quotes: [] };
+  if(params.get('source')==='jupiter')return {quotes:jupiter.list().filter(t=>(t.symbol+' '+t.name+' '+t.address).toLowerCase().includes(q.toLowerCase()))};
   if ((params.get('source') || 'birdeye') === 'dhan') return dhanSrc.searchDhan(q);
 
   // A pasted mint address — resolve it directly.
@@ -231,6 +239,7 @@ async function apiBatch(params) {
 // Dhan: NIFTY 50 constituents (Dhan has no "most active" feed).
 async function apiTokenList(params) {
   const limit = Math.min(Math.max(+params.get('limit') || 30, 1), 50);
+  if(params.get('source')==='jupiter')return jupiter.list();
   if ((params.get('source') || 'birdeye') === 'dhan') return dhanSrc.niftyList(limit);
   const minLiq = Math.max(+params.get('min_liquidity') || 500000, 0);
   const json = await birdeye(

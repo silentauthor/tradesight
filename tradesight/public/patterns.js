@@ -239,7 +239,7 @@ const Patterns = (() => {
         const atLevel = srZones.some(z => Math.min(Math.abs(c.l - z.price), Math.abs(c.h - z.price), Math.abs(c.c - z.price)) <= tol);
         // confirmation: for reversals the books demand the NEXT bar close in the
         // pattern's direction before acting
-        let confirmed = null;
+        let confirmed = d.dir === 'neutral' ? null : false;
         if (i + 1 < candles.length) {
           const nxt = candles[i + 1];
           confirmed = d.dir === 'up' ? nxt.c > c.h : d.dir === 'down' ? nxt.c < c.l : null;

@@ -9,19 +9,20 @@ class CandleChart {
     this.overlays = [];   // {name, series, color, width}
     this.zones = [];      // {min, max, role, strength}
     this.lines = [];      // {price, color, label, dash}
-    this.markers = [];    // {i, dir:'up'|'down', label, color}
+    this.markers = [];
+    this.annotations=[]; this.layers={overlays:true,zones:true,annotations:true,markers:true,lines:true};    // {i, dir:'up'|'down', label, color}
     this.viewStart = 0;   // index of first visible candle
     this.crosshair = null;
     this.pad = { l: 10, r: 64, t: 12, b: 46 };
     this._bindEvents();
   }
 
-  setData({ candles, overlays = [], zones = [], lines = [], markers = [] }) {
+  setData({ candles, overlays = [], zones = [], lines = [], markers = [], annotations = [], timezone = 'UTC', interval = '1d' }) {
     this.candles = candles;
     this.overlays = overlays;
     this.zones = zones;
     this.lines = lines;
-    this.markers = markers;
+    this.markers = markers; this.annotations=annotations; this.timezone=timezone; this.interval=interval;
     this.viewCount = Math.min(candles.length, 160);
     this.viewStart = Math.max(0, candles.length - this.viewCount);
     this.draw();
@@ -43,10 +44,11 @@ class CandleChart {
       this.viewCount = newCount;
       this.draw();
     }, { passive: false });
+    c.addEventListener('dblclick',()=>this.resetView());
     let dragX = null;
-    c.addEventListener('mousedown', (e) => { dragX = e.clientX; });
-    window.addEventListener('mouseup', () => { dragX = null; });
-    window.addEventListener('mousemove', (e) => {
+    c.addEventListener('pointerdown', (e) => { dragX = e.clientX; c.setPointerCapture(e.pointerId); });
+    window.addEventListener('pointerup', () => { dragX = null; });
+    window.addEventListener('pointermove', (e) => {
       if (dragX == null) return;
       const dx = e.clientX - dragX;
       const perCandle = (this.canvas.clientWidth - this.pad.l - this.pad.r) / this.viewCount;
@@ -60,6 +62,8 @@ class CandleChart {
     new ResizeObserver(() => this.draw()).observe(c.parentElement);
   }
 
+  resetView(){this.viewCount=Math.min(this.candles.length,120);this.viewStart=Math.max(0,this.candles.length-this.viewCount);this.draw();}
+  setLayer(name,visible){this.layers[name]=visible;this.draw();}
   draw() {
     const { ctx, canvas } = this;
     const dpr = window.devicePixelRatio || 1;
@@ -69,14 +73,14 @@ class CandleChart {
     canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    if (!this.candles.length) return;
+    if (!this.candles.length || W<100 || H<100) return;
 
     const { l: pl, r: pr, t: pt, b: pb } = this.pad;
     const plotW = W - pl - pr, plotH = H - pt - pb;
     const view = this.candles.slice(this.viewStart, this.viewStart + this.viewCount);
     let lo = Infinity, hi = -Infinity;
     for (const c of view) { lo = Math.min(lo, c.l); hi = Math.max(hi, c.h); }
-    for (const ln of this.lines) { lo = Math.min(lo, ln.price); hi = Math.max(hi, ln.price); }
+    for (const ln of (this.layers.lines?this.lines:[])) { lo = Math.min(lo, ln.price); hi = Math.max(hi, ln.price); }
     const span = (hi - lo) || 1; lo -= span * 0.05; hi += span * 0.05;
     const y = (p) => pt + plotH * (1 - (p - lo) / (hi - lo));
     const x = (i) => pl + ((i - this.viewStart) + 0.5) * (plotW / this.viewCount);
@@ -105,12 +109,14 @@ class CandleChart {
     const labelEvery = Math.ceil(this.viewCount / 7);
     for (let i = 0; i < view.length; i += labelEvery) {
       const d = new Date(view[i].t);
-      ctx.fillText(`${d.toLocaleString('en', { month: 'short' })} ${d.getDate()} '${String(d.getFullYear()).slice(2)}`,
-        x(this.viewStart + i), H - pb + 16);
+      const intraday=['15m','30m','1h'].includes(this.interval);
+      const label=intraday?d.toLocaleString('en-GB',{timeZone:this.timezone,day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString('en-GB',{timeZone:this.timezone,day:'2-digit',month:'short',year:'2-digit'});
+      ctx.fillText(label,x(this.viewStart+i),H-pb+16);
     }
 
+    ctx.save();ctx.beginPath();ctx.rect(pl,pt,plotW,plotH);ctx.clip();
     // S/R zones
-    for (const z of this.zones) {
+    for (const z of (this.layers.zones?this.zones:[])) {
       if (z.max < lo || z.min > hi) continue;
       const yTop = y(Math.min(z.max + (z.max === z.min ? span * 0.004 : 0), hi));
       const yBot = y(Math.max(z.min - (z.max === z.min ? span * 0.004 : 0), lo));
@@ -128,7 +134,7 @@ class CandleChart {
     }
 
     // overlays
-    for (const ov of this.overlays) {
+    for (const ov of (this.layers.overlays?this.overlays:[])) {
       ctx.strokeStyle = ov.color; ctx.lineWidth = ov.width || 1.4;
       ctx.beginPath();
       let started = false;
@@ -154,9 +160,19 @@ class CandleChart {
       ctx.fillRect(xx - cw / 2, top, cw, hgt);
     }
 
+    // Confirmed-pivot trend lines and actual detected range boundaries.
+    if(this.layers.annotations) for(const [index,a] of this.annotations.entries()){
+      ctx.strokeStyle=a.color;ctx.lineWidth=a.kind==='pattern'?2:1.5;ctx.setLineDash(a.touches<3?[5,4]:[]);
+      ctx.beginPath();ctx.moveTo(x(a.from.i),y(a.from.price));ctx.lineTo(x(a.to.i),y(a.to.price));ctx.stroke();ctx.setLineDash([]);
+      if(a.to.i>=this.viewStart&&a.from.i<this.viewStart+this.viewCount){
+        const xx=Math.max(pl+8,Math.min(W-pr-180,x(a.from.i))), yy=Math.max(pt+35+index*17,Math.min(pt+plotH-18,y(a.to.price)-8));
+        ctx.font='11px ui-sans-serif, system-ui';ctx.textAlign='left';
+        ctx.fillStyle='rgba(11,15,20,.85)';ctx.fillRect(xx-3,yy-10,ctx.measureText(a.label).width+8,16);ctx.fillStyle=a.color;ctx.fillText(a.label,xx,yy);
+      }
+    }
     // markers (detected patterns)
     ctx.font = '10px ui-sans-serif, system-ui';
-    for (const m of this.markers) {
+    for (const m of (this.layers.markers?this.markers:[])) {
       if (m.i < this.viewStart || m.i >= this.viewStart + this.viewCount) continue;
       const c = this.candles[m.i];
       const xx = x(m.i);
@@ -171,7 +187,7 @@ class CandleChart {
 
     // horizontal trade lines (entry/stop/targets)
     ctx.textAlign = 'left';
-    for (const ln of this.lines) {
+    for (const ln of (this.layers.lines?this.lines:[])) {
       const yy = y(ln.price);
       if (yy < pt || yy > pt + plotH) continue;
       ctx.strokeStyle = ln.color; ctx.lineWidth = 1.2;
@@ -187,6 +203,7 @@ class CandleChart {
       ctx.fillText(label, pl + 9, yy - 8);
     }
 
+    ctx.restore();
     // crosshair
     if (this.crosshair && this.crosshair.x > pl && this.crosshair.x < W - pr) {
       const i = Math.min(this.candles.length - 1, Math.max(0,
@@ -199,14 +216,16 @@ class CandleChart {
         ctx.beginPath(); ctx.moveTo(pl, this.crosshair.y); ctx.lineTo(W - pr, this.crosshair.y); ctx.stroke();
         ctx.setLineDash([]);
         const d = new Date(c.t);
-        const info = `${d.toISOString().slice(0, 10)}  O ${this._fmt(c.o)}  H ${this._fmt(c.h)}  L ${this._fmt(c.l)}  C ${this._fmt(c.c)}  V ${this._fmtVol(c.v)}`;
+        const labels=this.layers.markers?this.markers.filter(m=>m.i===i).map(m=>m.label).join(', '):'';
+        const info = `${d.toLocaleString('en-GB',{timeZone:this.timezone})}  O ${this._fmt(c.o)}  H ${this._fmt(c.h)}  L ${this._fmt(c.l)}  C ${this._fmt(c.c)}  V ${this._fmtVol(c.v)}`;
         ctx.font = '11px ui-monospace, Menlo, monospace';
         const tw = ctx.measureText(info).width;
         ctx.fillStyle = 'rgba(11,15,20,0.9)';
         ctx.fillRect(pl + 2, pt + 2, tw + 12, 18);
         ctx.fillStyle = col('--text', '#dfe7f0');
         ctx.textAlign = 'left';
-        ctx.fillText(info, pl + 8, pt + 11);
+        ctx.fillText(info, pl + 8, pt + 11,plotW-16);
+        if(labels){ctx.fillStyle='rgba(11,15,20,.95)';ctx.fillRect(pl+2,pt+22,Math.min(plotW,ctx.measureText(labels).width+16),20);ctx.fillStyle=TXT;ctx.fillText(labels,pl+8,pt+33,plotW-16);}
       }
     }
   }

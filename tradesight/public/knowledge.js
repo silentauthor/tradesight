@@ -276,6 +276,16 @@ const KB = {
 
   /* Honest self-critique of this app's own scoring engine, from a book on
      validating systematic/rules-based trading systems. */
+  selectedRules: [
+    {rule:'Primary setup: first/second controlled pullback toward EMA20 in an uptrend. ATR buffers, a 50-bar touch-count window and four-bar pullback are app adaptations.',src:'Stewie — book-notes/04'},
+    {rule:'Primary setup: rectangle breakout with a close and volume confirmation, then a lighter-volume retest holding old resistance. Range geometry and numerical tolerances are app adaptations.',src:'Edwards & Magee; Stewie; Coulling — book-notes/10, 04, 12'},
+    {rule:'Require higher-timeframe agreement. ADX >=20 filters trend pullbacks; this threshold is an app adaptation of regime selection.',src:'Murphy; Zuckerman — book-notes/11, 05'},
+    {rule:'Trend → level → signal. Candlestick patterns are annotated as context; overlapping patterns do not add independent score bonuses.',src:'Candlestick Trading Bible — book-notes/01'},
+    {rule:'Size from predefined risk, rounded down to executable units; cap risk at 1% and position capital at 10%. Default risk is 0.5%.',src:'Tharp; Stewie — book-notes/07, 04'},
+    {rule:'Require at least 2R to a structural objective. Estimated costs are applied separately in the sizing check. Do not manufacture distant targets to pass the gate.',src:'Candlestick Trading Bible — book-notes/01; app implementation'},
+    {rule:'Historical pattern statistics are reference context, not this detector’s win probabilities. No SQN-driven risk escalation from journal samples.',src:'Bulkowski; Bandy; Tharp — book-notes/09, 15, 07'},
+    {rule:'Save the original plan before acting, record actual fills, and evaluate a series of outcomes rather than treating any setup as certain.',src:'Douglas; Schwager — book-notes/14'},
+  ],
   engineSelfCritique: [
     { rule: 'A composite scorer that adds points from many signals (candlesticks + indicators + smart-money concepts, exactly what this engine does) is a classic curve-fitting risk without out-of-sample or walk-forward testing — this app has not been backtested, and its scores should be read as structured, cited heuristics, not a validated system.', src: 'Howard Bandy, Quantitative Trading Systems' },
     { rule: 'A strategy needs a genuinely large number of independent out-of-sample trades before its results mean anything; in-sample performance (including "does this rule sound right") is close to meaningless on its own.', src: 'Howard Bandy' },
