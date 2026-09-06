@@ -481,9 +481,13 @@ async function runScan() {
     $('scanStatus').innerHTML = `<div class="status-line"><span class="spinner"></span>Scanning ${addrs.length} on the ${M.label.toLowerCase()} horizon (${M.primary.interval} candles)…</div>`;
     const batch = await api(`/api/batch?addresses=${addrs.map(encodeURIComponent).join(',')}&range=${M.scanRange}&interval=${M.primary.interval}&source=${src}`);
     const rows = [];
+    const skipped = [];
     for (const addr of addrs) {
       const d = batch[addr];
-      if (!d || d.error || !d.candles || d.candles.length < M.minBars) continue;
+      if (!d || d.error || !d.candles || d.candles.length < M.minBars) {
+        skipped.push(d && d.error ? d.error : 'not enough price history');
+        continue;
+      }
       try {
         const asset = { ...d, isCrypto: S.isCrypto, mode: state.mode, source: src };
         const daily = TA.analyzeSeries(asset.candles);
@@ -518,7 +522,13 @@ async function runScan() {
         <td style="max-width:320px"><small>${esc(r.top)}</small></td>
       </tr>`).join('');
     const best = rows.filter(r => r.score >= 58).length;
-    $('scanStatus').innerHTML = `<div class="status-line">Done — ${rows.length} analyzed, <b style="color:var(--up)">${best}</b> currently rate "tradeable". Top of the table = best setups now.</div>`;
+    let skipNote = '';
+    if (skipped.length) {
+      const common = skipped.sort((a, b) =>
+        skipped.filter(v => v === a).length - skipped.filter(v => v === b).length).pop();
+      skipNote = ` <span style="color:var(--paper-faint)">— ${skipped.length} skipped (${esc(String(common).slice(0, 90))})</span>`;
+    }
+    $('scanStatus').innerHTML = `<div class="status-line">Done — ${rows.length} analyzed, <b style="color:var(--up)">${best}</b> currently rate "tradeable".${skipNote}</div>`;
     $('scanTable').style.display = '';
   } catch (e) {
     $('scanStatus').innerHTML = `<div class="status-line err">Scan failed: ${esc(e.message)}</div>`;

@@ -59,47 +59,70 @@ function cacheSet(k, v, ttlMs) {
 }
 
 // ---------- HTTP client ----------
+// Global pace-limiter — Dhan's Data APIs cap at 5 req/s and reject bursts with
+// DH-904. Space every outgoing request ~220ms apart (≈4.5 req/s) regardless of
+// how many callers (scanner batch, analyze, tide) fire at once.
+let _nextSlot = 0;
+function pace() {
+  const gap = 220;
+  const now = Date.now();
+  const wait = Math.max(0, _nextSlot - now);
+  _nextSlot = Math.max(now, _nextSlot) + gap;
+  return wait ? new Promise((r) => setTimeout(r, wait)) : Promise.resolve();
+}
+
 async function dhanPost(path, body, ttlMs) {
   if (!TOKEN()) throw new Error('DHAN_ACCESS_TOKEN not set — see README (put it in tradesight/.env)');
   const key = 'POST ' + path + ' ' + JSON.stringify(body);
   const cached = cacheGet(key);
   if (cached) return cached;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 20000);
-  try {
-    const res = await fetch(DHAN_BASE + path, {
-      method: 'POST',
-      headers: {
-        'access-token': TOKEN(),
-        'client-id': CLIENT(),
-        accept: 'application/json',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-    let json = null, text = null;
-    try { text = await res.text(); json = JSON.parse(text); } catch { /* non-JSON error body */ }
+
+  for (let attempt = 0; ; attempt++) {
+    await pace();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    let res, json = null, text = null;
+    try {
+      res = await fetch(DHAN_BASE + path, {
+        method: 'POST',
+        headers: {
+          'access-token': TOKEN(),
+          'client-id': CLIENT(),
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      try { text = await res.text(); json = JSON.parse(text); } catch { /* non-JSON error body */ }
+    } finally {
+      clearTimeout(timer);
+    }
+
     const upMsg = (json && (json.errorMessage || json.message || json.error || json.remarks)) || (!json && text) || '';
     const failed = !res.ok || (json && json.status && json.status !== 'success' && !json.open && !(json.data && json.data.open));
-
-    if (failed) {
-      const blob = `${(json && json.errorCode) || ''} ${upMsg} ${!json ? (text || '') : ''}`;
-      // Dhan returns 401 for BOTH a bad token AND a valid token whose account has
-      // no Data-API subscription — disambiguate on the message so the user sees
-      // the fix that actually applies.
-      if (/not subscribed|subscribe to data|data api|unavailable for legal|\b451\b|DH-90[26]|\b80[67]\b/i.test(blob)) {
-        throw new Error("Dhan: the token authenticated, but this account has no active Data API subscription — market data is a paid add-on. Subscribe to the Data APIs plan at web.dhan.co → Profile → DhanHQ APIs, then retry. (A Trading API token alone does not include market data.)");
-      }
-      if (res.status === 401) throw new Error(`Dhan rejected the access token (401) — regenerate DHAN_ACCESS_TOKEN and check DHAN_CLIENT_ID${upMsg ? ' — ' + upMsg : ''}`);
-      if (res.status === 429) throw new Error('Dhan rate limit hit (429) — slow down or wait a minute');
-      if (res.status === 403) throw new Error(`Dhan: access denied (403)${upMsg ? ' — ' + upMsg : ''}`);
-      throw new Error(upMsg ? `Dhan: ${upMsg}` : `Dhan upstream ${res.status}`);
+    if (!failed) {
+      cacheSet(key, json, ttlMs);
+      return json;
     }
-    cacheSet(key, json, ttlMs);
-    return json;
-  } finally {
-    clearTimeout(timer);
+
+    const blob = `${(json && json.errorCode) || ''} ${upMsg} ${!json ? (text || '') : ''}`;
+    const rateLimited = res.status === 429 || /DH-904|rate ?limit|too many request/i.test(blob);
+    if (rateLimited && attempt < 3) {
+      await new Promise((r) => setTimeout(r, 700 * (attempt + 1))); // back off, then retry
+      continue;
+    }
+
+    // Dhan returns 401 for BOTH a bad token AND a valid token whose account has
+    // no Data-API subscription — disambiguate on the message so the user sees
+    // the fix that actually applies.
+    if (/not subscribed|subscribe to data|data api|unavailable for legal|\b451\b|DH-90[26]|\b80[67]\b/i.test(blob)) {
+      throw new Error("Dhan: the token authenticated, but this account has no active Data API subscription — market data is a paid add-on. Subscribe to the Data APIs plan at web.dhan.co → Profile → DhanHQ APIs, then retry. (A Trading API token alone does not include market data.)");
+    }
+    if (rateLimited) throw new Error('Dhan rate limit hit (DH-904) — the scanner is fetching too fast; wait a minute and retry.');
+    if (res.status === 401) throw new Error(`Dhan rejected the access token (401) — regenerate DHAN_ACCESS_TOKEN and check DHAN_CLIENT_ID${upMsg ? ' — ' + upMsg : ''}`);
+    if (res.status === 403) throw new Error(`Dhan: access denied (403)${upMsg ? ' — ' + upMsg : ''}`);
+    throw new Error(upMsg ? `Dhan: ${upMsg}` : `Dhan upstream ${res.status}`);
   }
 }
 
