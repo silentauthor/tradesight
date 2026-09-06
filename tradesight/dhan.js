@@ -36,6 +36,10 @@ const NIFTY50_SYMBOLS = [
 ];
 
 // Frontend interval token -> Dhan intraday `interval` (minutes). '1d' means daily.
+// Dhan's /charts/intraday only accepts interval ∈ {1, 5, 15, 25, 60} (see
+// .claude/skills/dhanhq/references/market-data.md), so there is no true 30-minute
+// bar — '30m' snaps to the nearest supported value, 25. The frontend MODES config
+// currently only ever requests '15m' and '1h', so the '30m' entry is a fallback.
 const INTRADAY_MIN = { '15m': 15, '30m': 25, '1h': 60 };
 const RANGE_DAYS = {
   '3d': 3, '5d': 5, '10d': 10, '1mo': 30, '3mo': 90, '6mo': 180,

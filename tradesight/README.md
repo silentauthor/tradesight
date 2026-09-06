@@ -1,22 +1,34 @@
 # TradeSight
 
-A book-grounded trading analysis and suggestion tool for **Solana tokens**. Enter
-a token name, symbol, or mint address and get an explainable verdict — safe to
-trade or not, entry zone, stop loss, staged exit targets, and every risk factor —
-all derived from rules extracted from the trading-book library in the parent
-directory, plus a market scanner that ranks the best setups across the
-most-traded Solana tokens.
+A book-grounded trading analysis and suggestion tool. Pick an asset and get an
+explainable verdict — a setup-quality score, entry zone, stop loss, staged exit
+targets, and every risk factor — all derived from rules extracted from the
+trading-book library in the parent directory, plus a market scanner that ranks
+the best setups across a market's universe.
 
-See `../PROMPT.md` for the full specification this app implements.
+The engine originally targeted Solana tokens (see `../PROMPT.md` for that spec);
+the current UI leads with two market workspaces, chosen by the URL hash:
+
+- **`/#india`** (default) — NSE/BSE cash equities + the NIFTY 50 index, via the
+  [Dhan Data API v2](https://dhanhq.co/docs/v2/). INR, NIFTY 50 tide, no order
+  APIs are ever called.
+- **`/#crypto`** — Jupiter Perps SOL / BTC / ETH long & short research. Live
+  venue price and 24h volume from Jupiter's public `/v2/market-stats`; the
+  technical candles are **Birdeye underlying spot**, explicitly labelled — not
+  Jupiter execution/oracle history. No wallet is connected, no orders are placed.
+
+A third source, `birdeye` (Solana SPL tokens by mint address), is still fully
+implemented in `server.js` / `src/index.js` but is not currently wired to any UI
+control.
 
 ## Run it
 
 ```
 # put your keys in tradesight/.env  (gitignored)
 cat > .env <<'KEYS'
-BIRDEYE_API_KEY=your_birdeye_key       # Solana source
-DHAN_ACCESS_TOKEN=your_dhan_jwt        # optional — Indian NSE/BSE source
-DHAN_CLIENT_ID=your_dhan_client_id     # optional
+BIRDEYE_API_KEY=your_birdeye_key       # required for /#crypto (Birdeye spot candles)
+DHAN_ACCESS_TOKEN=your_dhan_jwt        # required for /#india
+DHAN_CLIENT_ID=your_dhan_client_id     # required for /#india
 KEYS
 node --env-file=.env server.js
 ```
@@ -25,27 +37,27 @@ Then open **http://localhost:8742**. No install step, no build — a Node.js
 server (built-in `fetch`, Node 18+; `--env-file` needs Node 20.6+) plus a
 vanilla-JS frontend with a hand-rolled canvas candlestick chart.
 
-## Data source (Solana / Birdeye  vs  India / Dhan)
+The Dhan source needs an active **Data plan** on your account. The scrip-master
+CSV that backs `/api/search?source=dhan` and `/api/tokenlist?source=dhan` is
+public, so those two work without keys. The Cloudflare Worker (`src/index.js`) is
+Birdeye-only — neither Dhan nor Jupiter is available there.
 
-A header toggle switches which market TradeSight analyzes. It applies to Analyze,
-the Market Scanner and the Watchlist, and is remembered locally.
-
-| | **Solana · Birdeye** (default) | **India · Dhan** |
+| | **India · Dhan** (`/#india`) | **Crypto · Jupiter Perps** (`/#crypto`) |
 |---|---|---|
-| Data | [Birdeye Data API](https://public-api.birdeye.so) — free-tier key under **Security → API keys** | [Dhan Data API v2](https://dhanhq.co/docs/v2/) — needs an active **Data plan** on your Dhan account |
-| Env | `BIRDEYE_API_KEY` | `DHAN_ACCESS_TOKEN`, `DHAN_CLIENT_ID` |
-| Universe | Solana SPL tokens, by mint address | NSE/BSE **cash equities**, by security ID (resolved from Dhan's scrip master) |
-| Currency | USD | INR |
-| Market tide | SOL | NIFTY 50 |
-| Scanner | most-traded Solana tokens | NIFTY 50 constituents (Dhan has no "most active" feed) |
+| Data | Dhan Data API v2 (`/charts/historical`, `/charts/intraday`) | `perps-api.jup.ag/v2/market-stats` + Birdeye spot OHLCV |
+| Env | `DHAN_ACCESS_TOKEN`, `DHAN_CLIENT_ID` | `BIRDEYE_API_KEY` |
+| Universe | NSE/BSE cash equities, by security ID (Dhan scrip master) | SOL, BTC, ETH |
+| Currency | INR | USD |
+| Market tide | NIFTY 50 | SOL |
+| Scanner | NIFTY 50 constituents (Dhan has no "most active" feed) | the three markets |
 
 The engine, the rule base and their book attributions are identical for both —
-only the feed, the currency and the tide anchor change. Under Dhan the app is
-data-only: **no order APIs are called.** The Dhan source is Node-server only —
-the Cloudflare Worker (`src/index.js`) is Birdeye-only.
+only the feed, the currency and the tide anchor change.
 
 The DhanHQ REST reference lives in `.claude/skills/dhanhq/` (vendored from
-[dhan-oss/dhanhq-skills](https://github.com/dhan-oss/dhanhq-skills), MIT).
+[dhan-oss/dhanhq-skills](https://github.com/dhan-oss/dhanhq-skills), MIT). Jupiter
+market ids and the endpoint are from the official
+[Jupiter CLI PerpsClient](https://github.com/jup-ag/cli/blob/main/src/clients/PerpsClient.ts).
 
 ## What it does
 
@@ -62,9 +74,9 @@ The DhanHQ REST reference lives in `.claude/skills/dhanhq/` (vendored from
   `SEG:securityId`). Get a 0–100 setup-quality score, a verdict, an entry zone, a
   stop loss with the book rule behind it, three staged profit targets with
   R-multiples, and a full risk-factor breakdown.
-- **Market Scanner** — one click pulls the current source's universe (most-traded
-  Solana tokens, or NIFTY 50 stocks), analyzes each with the full engine on the
-  selected horizon, and ranks them by setup quality.
+- **Market Scanner** — one click pulls the current source's universe (NIFTY 50
+  stocks, or the three Jupiter Perps markets), analyzes each with the full engine
+  on the selected horizon and direction, and ranks them by setup quality.
 - **Watchlist** — persisted locally per asset id, filtered to the active data
   source, refreshes scores on demand.
 - **Journal** — log a trade plan from any analysis, track outcomes in R-multiples.
@@ -74,9 +86,9 @@ The DhanHQ REST reference lives in `.claude/skills/dhanhq/` (vendored from
 
 1. `server.js` proxies the market data (OHLCV candles, overview, search,
    universe list) with in-memory caching, so the browser never deals with CORS
-   or rate limits. Birdeye (Solana) logic lives inline; Dhan (NSE/BSE) logic is
-   in `dhan.js`. `src/index.js` is the Birdeye logic ported to Cloudflare
-   Workers (no Dhan).
+   or rate limits, dispatching on `?source=`. Birdeye logic lives inline; Dhan
+   (NSE/BSE) is in `dhan.js`; Jupiter Perps is in `jupiter.js`. `src/index.js` is
+   the Birdeye logic ported to Cloudflare Workers (no Dhan, no Jupiter).
 2. `indicators.js` computes SMA/EMA/RSI/MACD/Bollinger/ATR/OBV, swing points,
    support/resistance clustering, and market structure (trend, break of
    structure, premium/discount) purely from OHLCV.

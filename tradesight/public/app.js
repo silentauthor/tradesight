@@ -105,10 +105,13 @@ const SOURCES = {
 };
 
 /* ---------------- state ---------------- */
+/* Horizon + direction persist locally (the source does not — it is driven by the
+   URL hash, #india / #crypto). */
+const lsPick = (key, allowed, dflt) => { try { return allowed.includes(localStorage[key]) ? localStorage[key] : dflt; } catch { return dflt; } };
 const state = {
   current: null,        // {asset, assessment, daily, weekly}
-  mode:'intraday',
-  side:'long',
+  mode: lsPick('tsMode', ['intraday', 'swing'], 'intraday'),
+  side: lsPick('tsSide', ['long', 'short'], 'long'),
   source:location.hash.startsWith('#crypto')?'jupiter':'dhan',
   marketCtx: {},        // regime for the ACTIVE mode+source
   marketCtxByMode: {},  // cached regime, keyed "<source>:<mode>"
@@ -258,8 +261,9 @@ async function switchMarket(){
   gotoView('scanner');await loadMarketContext();
 }
 window.addEventListener('hashchange',switchMarket);
-document.querySelectorAll('#sideToggle input').forEach(r=>r.onchange=()=>{if(r.checked){state.side=r.value;refreshWorkspace();}});
-document.querySelectorAll('#modeToggle input').forEach(r=>r.onchange=()=>{if(r.checked){state.mode=r.value;refreshWorkspace();loadMarketContext();}});
+function persistWorkspace(){try{localStorage.tsMode=state.mode;localStorage.tsSide=state.side;}catch{}}
+document.querySelectorAll('#sideToggle input').forEach(r=>r.onchange=()=>{if(r.checked){state.side=r.value;persistWorkspace();refreshWorkspace();}});
+document.querySelectorAll('#modeToggle input').forEach(r=>r.onchange=()=>{if(r.checked){state.mode=r.value;persistWorkspace();refreshWorkspace();loadMarketContext();}});
 
 /* Swap search placeholder + quick-symbol chips for the active source. */
 function applySourceChrome() {
