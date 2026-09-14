@@ -25,6 +25,7 @@
   <nav>
     <button data-view="scanner" class="active">Find setups</button>
     <button data-view="analyze">Analyze an asset</button>
+    <button data-view="insight" data-india-only>Stock insight</button>
     <button data-view="watchlist">Watchlist</button>
     <button data-view="journal">Trade journal</button>
     <button data-view="learn">Strategy guide</button>
@@ -126,6 +127,42 @@
         <h3>Chart patterns &amp; gaps <span class="hint chip">selected geometry · no transferred win-rate claims</span></h3>
         <ul class="signals" id="chartPatternList"></ul>
       </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ================= STOCK INSIGHT (NEWS) ================= -->
+  <section class="view" id="view-insight">
+    <div class="search-wrap">
+      <input id="newsInput" placeholder="NSE / BSE stock — company name or ticker (e.g. RELIANCE, TCS, HDFC Bank…)" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="quick-syms" id="newsQuick"></div>
+    <p class="market-note">Recent headlines from Google News (Indian portals) and curated markets feeds, scored by an LLM for sentiment and estimated near-term price impact. Heuristic decision support — not a forecast, and it does not affect the technical verdict.</p>
+    <div id="newsStatus"></div>
+    <div id="newsResult" style="display:none">
+      <div class="asset-head" id="newsHead"></div>
+      <div class="panel decision-card" style="margin-bottom:16px">
+        <div class="decision-heading">
+          <div><small id="newsModelTag">NEWS IMPACT</small><h2 id="newsHeadline"></h2></div>
+          <button id="newsRefresh" class="star-btn">Refresh</button>
+        </div>
+        <div class="decision-grid" id="newsGrid"></div>
+        <p id="newsRationale"></p>
+        <div class="footnote" id="newsCaveats"></div>
+      </div>
+      <div class="grid cols-2" style="margin-bottom:16px">
+        <div class="panel">
+          <h3>Key drivers <span class="hint chip">scored headlines, most material first</span></h3>
+          <ul class="signals" id="newsDrivers"></ul>
+        </div>
+        <div class="panel">
+          <h3>Market backdrop</h3>
+          <p id="newsBackdrop" style="color:var(--paper-dim);line-height:1.7;margin-bottom:10px"></p>
+          <ul class="signals" id="newsMarket"></ul>
+        </div>
+      </div>
+      <details class="research-details"><summary>All retrieved headlines</summary>
+        <div class="panel" style="margin:0 16px 16px"><ul class="signals" id="newsAll"></ul></div>
       </details>
     </div>
   </section>

@@ -15,6 +15,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const dhanSrc = require('./dhan'); // Dhan (Indian NSE/BSE) data source
+const newsSrc = require('./news'); // Indian-market stock news insight (Claude API scoring)
 
 const PORT = process.env.PORT || 8742;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -263,12 +264,66 @@ async function apiTokenList(params) {
     .map((t, i) => ({ ...t, rank: i + 1 }));
 }
 
+// News insight — India (Dhan) only. Resolves the company from the public scrip
+// master, builds a light price/volatility context (best-effort, needs Dhan
+// keys), pulls recent headlines and scores them with the Claude API.
+async function apiNews(params) {
+  if ((params.get('source') || 'dhan') !== 'dhan') throw new Error('Stock news insight is available for the India (Dhan) market only.');
+  const address = (params.get('address') || '').trim();
+  const q = (params.get('q') || '').trim();
+  const ref = address || q;
+  if (!ref) throw new Error('Pass an NSE/BSE stock (?q= name/ticker, or ?address=SEG:securityId).');
+
+  const cacheKey = 'news-result:' + ref.toLowerCase();
+  const hit = cacheGet(cacheKey);
+  if (hit) return hit;
+
+  let quote = null;
+  try {
+    const r = await dhanSrc.searchDhan(address && dhanSrc.DHAN_ADDR_RE.test(address) ? address : q);
+    quote = r.quotes && r.quotes[0];
+  } catch { /* fall through */ }
+  if (!quote) throw new Error(`Could not resolve an NSE/BSE stock from "${ref}".`);
+
+  const asset = { symbol: quote.symbol, name: quote.name, exchange: quote.exchange || 'NSE', address: quote.address, price: null };
+  try {
+    const chart = await getChart(quote.address, '3mo', '1d', 'dhan');
+    const k = chart.candles || [];
+    if (k.length > 1) {
+      const c = k.map((x) => x.c), n = c.length, pc = (a, b) => (b ? ((a - b) / b) * 100 : null);
+      asset.price = chart.price;
+      asset.chg1d = pc(c[n - 1], c[n - 2]);
+      asset.chg5d = n > 5 ? pc(c[n - 1], c[n - 6]) : null;
+      asset.chg20d = n > 20 ? pc(c[n - 1], c[n - 21]) : null;
+      let tr = 0, m = 0;
+      for (let i = Math.max(1, n - 14); i < n; i++) {
+        const h = k[i].h, l = k[i].l, p = k[i - 1].c;
+        tr += Math.max(h - l, Math.abs(h - p), Math.abs(l - p)); m++;
+      }
+      asset.atrPct = m && chart.price ? (tr / m) / chart.price * 100 : null;
+    }
+  } catch (e) {
+    asset.priceNote = String(e.message || e);
+  }
+
+  const news = await newsSrc.getStockNews(asset.name, asset.symbol);
+  const assessment = await newsSrc.scoreNews(asset, news);
+  const out = {
+    asset,
+    news: { stock: news.stock, market: news.market, fetchedAt: news.fetchedAt, feedsOk: news.feedsOk, query: news.query },
+    assessment,
+  };
+  cacheSet(cacheKey, out, 15 * 60 * 1000);
+  return out;
+}
+
 const ROUTES = {
   '/api/search': apiSearch,
   '/api/chart': apiChart,
   '/api/batch': apiBatch,
   '/api/tokenlist': apiTokenList,
   '/api/crypto/markets': apiTokenList,
+  '/api/news': apiNews,
 };
 
 function serveStatic(req, res, urlPath) {
@@ -305,4 +360,5 @@ server.listen(PORT, () => {
   console.log(`TradeSight running → http://localhost:${PORT}`);
   if (!BIRDEYE_KEY) console.warn('⚠  BIRDEYE_API_KEY is not set — Birdeye (Solana) /api calls will fail. Put it in tradesight/.env');
   if (!dhanSrc.dhanConfigured()) console.warn('ℹ  DHAN_ACCESS_TOKEN is not set — the Dhan (NSE/BSE) source is unavailable until you add it to tradesight/.env');
+  if (!newsSrc.newsConfigured()) console.warn('ℹ  ANTHROPIC_API_KEY is not set — the Stock Insight news scoring is unavailable until you add it to tradesight/.env');
 });

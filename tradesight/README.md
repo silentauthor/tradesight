@@ -21,6 +21,16 @@ A third source, `birdeye` (Solana SPL tokens by mint address), is still fully
 implemented in `server.js` / `src/index.js` but is not currently wired to any UI
 control.
 
+The **Stock Insight (news)** tab (India only) is separate from the technical
+engine: it pulls recent headlines for a chosen NSE/BSE stock from Google News
+(Indian portals) plus a set of curated markets/business RSS feeds, then asks the
+Claude API to score the news flow — direction, a 0–100 impact score, an
+estimated near-term price move anchored to the stock's own daily range, a
+horizon, and per-headline drivers with event type and sentiment. It needs
+`ANTHROPIC_API_KEY` (model override: `TRADESIGHT_NEWS_MODEL`, default
+`claude-opus-5`). This is a heuristic read, not a forecast, and it never changes
+a technical verdict.
+
 ## Run it
 
 ```
@@ -29,6 +39,7 @@ cat > .env <<'KEYS'
 BIRDEYE_API_KEY=your_birdeye_key       # required for /#crypto (Birdeye spot candles)
 DHAN_ACCESS_TOKEN=your_dhan_jwt        # required for /#india
 DHAN_CLIENT_ID=your_dhan_client_id     # required for /#india
+ANTHROPIC_API_KEY=your_claude_key      # required for the Stock Insight (news) tab only
 KEYS
 node --env-file=.env server.js
 ```
@@ -77,6 +88,11 @@ market ids and the endpoint are from the official
 - **Market Scanner** — one click pulls the current source's universe (NIFTY 50
   stocks, or the three Jupiter Perps markets), analyzes each with the full engine
   on the selected horizon and direction, and ranks them by setup quality.
+- **Stock Insight (news)** — India only. Pick an NSE/BSE stock; the server pulls
+  recent headlines (Google News per-company + curated markets feeds) and the
+  Claude API scores them into a sentiment direction, a 0–100 news-impact score,
+  an estimated near-term price move, a horizon, and a ranked list of the
+  headlines actually driving the read. Independent of the technical engine.
 - **Watchlist** — persisted locally per asset id, filtered to the active data
   source, refreshes scores on demand.
 - **Journal** — log a trade plan from any analysis, track outcomes in R-multiples.

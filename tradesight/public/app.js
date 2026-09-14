@@ -117,6 +117,7 @@ const state = {
   marketCtxByMode: {},  // cached regime, keyed "<source>:<mode>"
   chart: null,
   scanCache: null,
+  insightRef: null,
 };
 const SRC = () => SOURCES[state.source];
 const CCY = () => SRC().ccy;
@@ -147,8 +148,11 @@ document.querySelectorAll('nav button').forEach(btn => {
   btn.onclick = () => {
     document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b === btn));
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + btn.dataset.view));
-    if (btn.dataset.view === 'watchlist') renderWatchlist();
-    if (btn.dataset.view === 'journal') renderJournal();
+    const v = btn.dataset.view;
+    document.querySelector('.workspace-controls').hidden = v === 'insight';
+    if (v === 'watchlist') renderWatchlist();
+    if (v === 'journal') renderJournal();
+    if (v === 'insight') $('newsInput').focus();
   };
 });
 function gotoView(name) { document.querySelector(`nav button[data-view="${name}"]`).click(); }
@@ -224,7 +228,7 @@ async function assessAddress(address, mode, source, primaryData = null, context 
 
 /* Explicit market pages and direction selection. Pending work cannot change pages. */
 function invalidateWorkspace(){
-  analyzeRequest++;scanRequest++;watchRequest++;
+  analyzeRequest++;scanRequest++;watchRequest++;insightRequest++;
   state.scanCache=null;$('scanTable').style.display='none';$('scanStatus').textContent='';$('scanBtn').disabled=false;
 }
 function refreshWorkspace(){
@@ -235,6 +239,8 @@ function refreshWorkspace(){
 }
 function updateWorkspaceChrome(){
   const india=state.source==='dhan';
+  document.querySelectorAll('nav button[data-india-only]').forEach(b=>b.hidden=!india);
+  if(!india&&document.querySelector('#view-insight.active'))gotoView('scanner');
   document.querySelectorAll('#modeToggle input').forEach(r=>{r.checked=r.value===state.mode;r.disabled=false;});
   document.querySelectorAll('#sideToggle input').forEach(r=>r.checked=r.value===state.side);
   document.querySelectorAll('[data-market]').forEach(a=>a.classList.toggle('selected',a.dataset.market===(india?'dhan':'perps')));
@@ -254,9 +260,10 @@ function updateWorkspaceChrome(){
 async function switchMarket(){
   const next=location.hash.startsWith('#crypto')?'jupiter':'dhan';
   if(next===state.source)return;
-  state.source=next;state.current=null;state.marketCtx={};
+  state.source=next;state.current=null;state.marketCtx={};state.insightRef=null;
   clearTimeout(sugTimer);closeSug();
-  invalidateWorkspace();applySourceChrome();restoreSizing();updateWorkspaceChrome();
+  invalidateWorkspace();applySourceChrome();applyInsightChrome();restoreSizing();updateWorkspaceChrome();
+  $('newsResult').style.display='none';$('newsStatus').textContent='';
   $('analyzeResult').style.display='none';$('analyzeStatus').textContent='';$('marketChips').textContent='Loading market context…';
   gotoView('scanner');await loadMarketContext();
 }
@@ -352,7 +359,8 @@ function renderAnalysis() {
     <span class="meta">${esc(asset.symbol)} · ${esc(asset.exchange || 'Solana')}${asset.type==='PERPETUAL'?' · $'+(asset.venueVolume24h/1e6).toFixed(1)+'M Jupiter 24h volume':asset.liquidity ? ' · $' + (asset.liquidity / 1e6).toFixed(1) + 'M liquidity' : ''}</span>
     <span class="px">${cur}${fmtPx(asset.price)} <span class="${chg >= 0 ? 'pos' : 'neg'}">${fmtPct(chg)}</span></span>
     <span class="meta">Range H/L: ${cur}${fmtPx(asset.low52)} – ${cur}${fmtPx(asset.high52)}</span>
-    <span class="chip">${asset.side==='short'?'SELL / SHORT':'BUY / LONG'} · ${M.label} horizon · ${M.primary.interval} candles · ${esc(htfLabel)} higher-timeframe</span>${asset.venuePrice?`<span class="venue-price">Jupiter live price: $${fmtPx(asset.venuePrice)} · Chart: underlying spot</span>`:''}`;
+    <span class="chip">${asset.side==='short'?'SELL / SHORT':'BUY / LONG'} · ${M.label} horizon · ${M.primary.interval} candles · ${esc(htfLabel)} higher-timeframe</span>${asset.source==='dhan'?`<button class="star-btn" id="newsJumpBtn">News insight →</button>`:''}${asset.venuePrice?`<span class="venue-price">Jupiter live price: $${fmtPx(asset.venuePrice)} · Chart: underlying spot</span>`:''}`;
+  if(asset.source==='dhan')$('newsJumpBtn').onclick=()=>loadInsight(asset.address);
 
   // score ring — instrument dial. Tick marks mark the actual tier thresholds
   // (42/58/72), so the ring encodes real information, not just a filled arc.
@@ -518,6 +526,96 @@ function runCalc(){
 }
 restoreSizing();
 
+/* ---------------- stock insight (news) ----------------
+   India-only. Pulls recent headlines (Google News + curated markets feeds,
+   server-side) and an LLM sentiment / price-impact estimate from /api/news.
+   Kept fully separate from the technical engine — it never changes a verdict. */
+let insightRequest = 0;
+function applyInsightChrome() {
+  $('newsInput').value = '';
+  $('newsQuick').innerHTML = 'Try: ' + SOURCES.dhan.quickSyms
+    .map(s => `<button data-news="${esc(s)}">${esc(s)}</button>`).join('');
+  $('newsQuick').querySelectorAll('[data-news]').forEach(b => b.onclick = () => loadInsight(b.dataset.news));
+}
+$('newsInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); const q = e.target.value.trim(); if (q) loadInsight(q); }
+});
+$('newsRefresh') && ($('newsRefresh').onclick = () => { if (state.insightRef) loadInsight(state.insightRef, true); });
+
+const fmtSignedPct = (n) => n == null || !Number.isFinite(n) ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(1)}%`;
+const moveRange = (m) => !m ? '—'
+  : Math.abs(m.low) < 0.05 && Math.abs(m.high) < 0.05 ? '~flat'
+  : `${fmtSignedPct(m.low)} to ${fmtSignedPct(m.high)}`;
+
+async function loadInsight(query, force) {
+  if (state.source !== 'dhan') { gotoView('scanner'); return; }
+  gotoView('insight');
+  const request = ++insightRequest;
+  state.insightRef = query;
+  $('newsInput').value = query;
+  $('newsResult').style.display = 'none';
+  $('newsStatus').innerHTML = '<div class="status-line"><span class="spinner"></span>Resolving the stock, pulling recent headlines and scoring the news flow…</div>';
+  try {
+    let address = '';
+    try { address = await resolveToAddress(query, 'dhan'); } catch { /* let the server resolve by name */ }
+    const qs = address ? `address=${encodeURIComponent(address)}` : `q=${encodeURIComponent(query)}`;
+    const data = await api(`/api/news?source=dhan&${qs}${force ? '&_=' + Date.now() : ''}`);
+    if (request !== insightRequest || state.source !== 'dhan') return;
+    state.insightRef = address || query;
+    renderInsight(data);
+    $('newsStatus').innerHTML = '';
+    $('newsResult').style.display = '';
+  } catch (e) {
+    if (request !== insightRequest) return;
+    $('newsStatus').innerHTML = `<div class="status-line err">Could not build a news insight for "${esc(query)}": ${esc(e.message)}</div>`;
+  }
+}
+
+function renderInsight(data) {
+  const { asset, news, assessment: A } = data;
+  const dirClass = A.direction === 'bullish' ? 'pos' : A.direction === 'bearish' ? 'neg' : '';
+  const pxBits = [
+    Number.isFinite(asset.price) ? `₹${fmtPx(asset.price)}` : null,
+    Number.isFinite(asset.chg1d) ? `<span class="${asset.chg1d >= 0 ? 'pos' : 'neg'}">${fmtPct(asset.chg1d)} 1d</span>` : null,
+    Number.isFinite(asset.atrPct) ? `ATR ~${asset.atrPct.toFixed(1)}%` : null,
+  ].filter(Boolean).join(' · ');
+  $('newsHead').innerHTML = `
+    <span class="nm">${esc(asset.name)}</span>
+    <span class="meta">${esc(asset.symbol)} · ${esc(asset.exchange || 'NSE')}</span>
+    ${pxBits ? `<span class="px">${pxBits}</span>` : ''}
+    ${asset.priceNote ? `<span class="venue-price">Price context unavailable — ${esc(asset.priceNote)}</span>` : ''}`;
+
+  const when = news.fetchedAt ? new Date(news.fetchedAt).toLocaleString() : '';
+  $('newsModelTag').textContent = `NEWS IMPACT${A.model ? ' · ' + A.model : ''} · ${news.stock.length} stock headline${news.stock.length === 1 ? '' : 's'}${when ? ' · ' + when : ''}`;
+  $('newsHeadline').textContent = A.headline || '—';
+
+  $('newsGrid').innerHTML = [
+    ['Direction', `<b class="${dirClass}">${esc((A.direction || '—').toUpperCase())}</b>`],
+    ['News impact score', `<b>${A.newsScore ?? '—'}<small style="font-size:11px"> / 100</small></b>`],
+    ['Est. near-term move', `<b class="${dirClass}">${esc(moveRange(A.expectedMovePct))}</b>`],
+    ['Horizon', `<b>${esc(A.horizon || '—')}</b>`],
+    ['Model confidence', `<b>${A.confidence != null ? Math.round(A.confidence * 100) + '%' : '—'}</b>`],
+    ['Move anchored on', `<b style="font-size:12px;font-family:var(--font-sans);font-weight:400">${esc(A.expectedMovePct?.basis || '—')}</b>`],
+  ].map(([k, v]) => `<div><small>${k}</small>${v}</div>`).join('');
+
+  $('newsRationale').textContent = A.rationale || '';
+  $('newsCaveats').textContent = 'Caveats: ' + (A.caveats || '—');
+
+  const arrow = (s) => s > 0.15 ? '▲' : s < -0.15 ? '▼' : '◆';
+  $('newsDrivers').innerHTML = (A.keyDrivers || []).map(d => `
+    <li class="${d.sentiment > 0.15 ? 'pro' : d.sentiment < -0.15 ? 'con' : ''}">
+      <span class="pts">${arrow(d.sentiment)}</span>
+      <span><b>${esc(d.headline)}</b> — ${esc(d.eventType || 'news')} · ${esc(d.impact || 'low')} impact${d.materiality != null ? ' · materiality ' + d.materiality.toFixed(2) : ''}.
+      ${d.note ? `<br><small style="color:var(--paper-dim)">${esc(d.note)}</small>` : ''}
+      <br><small style="color:var(--paper-faint)">${esc(d.source || 'unknown')}${d.date && d.date !== 'unknown' ? ' · ' + esc(d.date) : ''}</small></span>
+    </li>`).join('') || '<li>No individual headline was material enough to move the assessment.</li>';
+
+  $('newsBackdrop').textContent = A.marketBackdrop || '';
+  const headlineLi = (h) => `<li><span class="pts">·</span><span>${h.link ? `<a href="${esc(h.link)}" target="_blank" rel="noopener">${esc(h.title)}</a>` : `<b>${esc(h.title)}</b>`}<br><small style="color:var(--paper-faint)">${esc(h.source || '')}${h.pubDate ? ' · ' + esc(h.pubDate) : ''}</small></span></li>`;
+  $('newsMarket').innerHTML = (news.market || []).slice(0, 10).map(headlineLi).join('') || '<li>No market headlines retrieved.</li>';
+  $('newsAll').innerHTML = (news.stock || []).map(headlineLi).join('') || '<li>No stock-specific headlines retrieved.</li>';
+}
+
 /* ---------------- scanner ---------------- */
 $('scanBtn').onclick=runScan;
 $('scanFilter').onchange=renderScanRows;
@@ -530,6 +628,9 @@ async function runScan(){
     const [list,ctx]=await Promise.all([api(`/api/tokenlist?limit=${M.scanLimit}&source=${src}`),marketCtxFor(mode,src)]);
     if(!list.length)throw new Error('No instruments returned');
     const batch=await api(`/api/batch?addresses=${list.map(t=>encodeURIComponent(t.address)).join(',')}&range=${M.primary.range}&interval=${M.primary.interval}&source=${src}`);
+    // Backfill metadata the batch endpoint omits (the Workers birdeye proxy skips
+    // token_overview to stay under the 50-subrequest cap) from the universe rows.
+    for(const t of list){const b=batch[t.address];if(b&&!b.error){b.symbol=t.symbol||b.symbol;b.name=t.name||b.name;if(t.liquidity!=null)b.liquidity=t.liquidity;if(t.marketCap!=null)b.marketCap=t.marketCap;if(b.price==null)b.price=t.price;}}
     const rows=[],queue=[...list];
     await Promise.all(Array.from({length:3},async()=>{while(queue.length&&active()){
       const t=queue.shift();try{
@@ -652,5 +753,6 @@ $('chartTools').querySelectorAll('[data-layer]').forEach(input=>input.onchange=(
 $('disclaimer').textContent = KB.disclaimer;
 renderPlaybook();
 applySourceChrome();
+applyInsightChrome();
 updateWorkspaceChrome();
 loadMarketContext();

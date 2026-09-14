@@ -80,7 +80,7 @@ function normalizeChart(address, ohlcvJson, overviewJson) {
   };
 }
 
-async function getChart(address, range, interval, ctx, key) {
+async function getChart(address, range, interval, ctx, key, withOverview = true) {
   if (!ADDR_RE.test(address)) throw new Error('invalid Solana token address');
   if (!VALID_RANGE.has(range)) range = '1y';
   const type = INTERVAL_MAP[interval] || '1D';
@@ -89,9 +89,12 @@ async function getChart(address, range, interval, ctx, key) {
   const timeFrom = timeTo - days * 86400;
   const higherTf = interval === '1d' || interval === '1wk';
   const ttl = higherTf ? 300 : 60; // intraday candles refresh faster
+  // The Workers free plan caps a single invocation at 50 subrequests. The batch
+  // path (scanner) passes withOverview=false so it costs one subrequest per token
+  // instead of two; the frontend backfills symbol/liquidity from /api/tokenlist.
   const [ohlcv, overview] = await Promise.all([
     birdeye(`/defi/v3/ohlcv?address=${address}&type=${type}&time_from=${timeFrom}&time_to=${timeTo}`, ttl, ctx, key),
-    birdeye(`/defi/token_overview?address=${address}`, 60, ctx, key).catch(() => null),
+    withOverview ? birdeye(`/defi/token_overview?address=${address}`, 60, ctx, key).catch(() => null) : Promise.resolve(null),
   ]);
   return normalizeChart(address, ohlcv, overview);
 }
@@ -154,7 +157,7 @@ async function apiChart(params, ctx, key) {
 
 async function apiBatch(params, ctx, key) {
   const addrs = (params.get('addresses') || params.get('symbols') || '')
-    .split(',').map(s => s.trim()).filter(s => ADDR_RE.test(s)).slice(0, 40);
+    .split(',').map(s => s.trim()).filter(s => ADDR_RE.test(s)).slice(0, 45);
   const range = params.get('range') || '6mo';
   const interval = params.get('interval') || '1d';
   const out = {};
@@ -163,7 +166,7 @@ async function apiBatch(params, ctx, key) {
     while (queue.length) {
       const addr = queue.shift();
       try {
-        out[addr] = await getChart(addr, range, interval, ctx, key);
+        out[addr] = await getChart(addr, range, interval, ctx, key, false);
       } catch (e) {
         out[addr] = { error: String(e.message || e) };
       }
